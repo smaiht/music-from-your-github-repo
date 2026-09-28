@@ -7,9 +7,12 @@ The tree is fully expanded, names are pushed to the left edge, letters become
 blocks by ink density, and the figure turns 90° and mirrors downwards.
 The result is a waveform, and it plays.
 
-[![smaiht/photobooth: the tree turns into a wave and plays. Click for the video with sound.](media/preview.gif)](https://ne.so.gl/gitmusic/media/demo.mp4)
+[![smaiht/photobooth: the tree turns into a wave and plays. Click for the video with sound.](media/preview.gif)]([https://ne.so.gl/gitmusic/media/demo.mp4](https://github.com/user-attachments/assets/92109122-3fe5-4d71-986f-0b1b5dac2933))
 
-**[Watch the demo with sound](https://ne.so.gl/gitmusic/media/demo.mp4)** ([`media/demo.mp4`](media/demo.mp4)).
+[**Watch the demo with sound**]([`media/demo.mp4`](media/demo.mp4))
+
+https://github.com/user-attachments/assets/92109122-3fe5-4d71-986f-0b1b5dac2933
+
 It is not a screen recording: `tools/demo-video.mjs` steps the page's own renderer through a
 virtual clock frame by frame, and lays over it the track rendered offline by the same engine,
 so picture and sound line up to the sample.
