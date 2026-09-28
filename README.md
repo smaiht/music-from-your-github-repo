@@ -7,7 +7,8 @@ The tree is fully expanded, names are pushed to the left edge, letters become
 blocks by ink density, and the figure turns 90° and mirrors downwards.
 The result is a waveform, and it plays.
 
-[**Watch the demo with sound**]
+**Watch the demo with sound**
+
 https://github.com/user-attachments/assets/92109122-3fe5-4d71-986f-0b1b5dac2933
 
 It is not a screen recording: `tools/demo-video.mjs` steps the page's own renderer through a
