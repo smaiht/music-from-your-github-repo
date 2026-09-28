@@ -6,6 +6,8 @@ const App = (() => {
   // Opens with this repo: fetched live from GitHub, the embedded snapshot covers rate limits and sandboxes.
   const DEFAULT_REPO = 'smaiht/photobooth';
   const SPEEDS = [0.25, 0.5, 1, 2, 4];
+  // Renamed with the synthwave default, so earlier visitors start on the new default once.
+  const STYLE_KEY = 'filophone.style';
   const PH = Stage.PHASES;
   const PH_START = [];
   let PH_TOTAL = 0;
@@ -14,7 +16,7 @@ const App = (() => {
   const state = {
     model: null, score: null, source: null, demoId: null,
     p: 0, anim: null, autoplay: false, blocked: false,
-    speed: 1, bpm: 0, style: Styles.LIST[U.storage.get('filofon.style')] ? U.storage.get('filofon.style') : Styles.DEFAULT,
+    speed: 1, bpm: 0, style: Styles.LIST[U.storage.get(STYLE_KEY)] ? U.storage.get(STYLE_KEY) : Styles.DEFAULT,
     hover: -1, lastLine: -2, dirty: true, loadSeq: 0,
   };
   const ui = { timeNow: '', phase: -1, morphDragging: false, seekDragging: false, seekVal: -1, playing: null, ask: false };
@@ -95,9 +97,9 @@ const App = (() => {
     const s = state.score;
     const t = U.fmtTime(Math.min(pos, s.duration));
     if (t !== ui.timeNow) { $('timeNow').textContent = t; ui.timeNow = t; }
-    if (!ui.morphDragging) $('morphRange').value = String(state.p);
+    if (!ui.morphDragging && ui.morphVal !== state.p) { setRange($('morphRange'), state.p); ui.morphVal = state.p; }
     const sv = Math.round(Math.min(pos, s.duration) * 10) / 10;
-    if (!ui.seekDragging && sv !== ui.seekVal) { $('seekRange').value = String(sv); ui.seekVal = sv; }
+    if (!ui.seekDragging && sv !== ui.seekVal) { setRange($('seekRange'), sv); ui.seekVal = sv; }
     const ask = state.blocked && !player.playing && !state.anim;
     if (ask !== ui.ask) { $('stagePlay').hidden = !ask; $('playBtn').classList.toggle('is-waiting', ask); ui.ask = ask; }
     const phase = state.p >= 5 ? 5 : Math.floor(state.p);
@@ -113,9 +115,37 @@ const App = (() => {
     if (line !== state.lastLine) {
       state.lastLine = line;
       renderReadout(line, pos);
+      renderNowPlaying(line, pos);
       panel.setCurrent(pos > 0 || player.playing ? line : -1, player.playing || state.follow);
       state.follow = false;
     }
+  }
+
+  // Range inputs paint their filled part from --p.
+  function fillRange(el) {
+    const lo = Number(el.min) || 0, hi = Number(el.max) || 1;
+    el.style.setProperty('--p', `${U.clamp(((Number(el.value) - lo) / (hi - lo || 1)) * 100, 0, 100)}%`);
+  }
+  function setRange(el, v) { el.value = String(v); fillRange(el); }
+
+  // The sticky bar: which file is sounding, over which chord and section.
+  function renderNowPlaying(i, pos) {
+    const s = state.score, path = $('npPath');
+    path.textContent = '';
+    if (i < 0) {
+      path.append(U.el('span', { class: 'np-file', text: 'coda' }));
+      $('npMeta').textContent = `${s.chords[s.chords.length - 1].name} · home`;
+      return;
+    }
+    const l = state.model.lines[i];
+    const dirs = l.path ? l.path.split('/') : [];
+    const name = dirs.pop() || l.name;
+    if (dirs.length) path.append(U.el('span', { class: 'np-dir', text: `${dirs.join('/')}/` }));
+    path.append(U.el('span', { class: 'np-file', text: l.isDir && l.depth > 0 ? `${name}/` : name }));
+    path.title = l.path || l.name;
+    const tt = pos > 0 ? pos : s.timeOf(i);
+    const sec = s.sections[s.notes[i] && s.notes[i].sec != null ? s.notes[i].sec : 0];
+    $('npMeta').textContent = `${s.chordAt(tt).name} · ${sec.label}`;
   }
 
   function captionIdle() {
@@ -129,6 +159,7 @@ const App = (() => {
   function renderHeader() {
     const src = state.source;
     $('repoTitle').textContent = src.title;
+    document.title = `${src.title} · Filophone`;
     let desc = '';
     if (src.meta && src.meta.description) desc = src.meta.description;
     else if (src.kind === 'demo') desc = 'Built-in tree snapshot: loads instantly and doesn’t use up your GitHub rate limit.';
@@ -139,11 +170,6 @@ const App = (() => {
     $('treeCount').textContent = U.count(n, 'line');
   }
 
-  function rateLabel(r) {
-    if (r >= 1) return `${U.count(r, 'line')} per beat`;
-    return `a line every ${U.count(Math.round(1 / r), 'beat')}`;
-  }
-
   function renderFacts() {
     const s = state.score, st = state.model.stats;
     const dl = $('repoFacts');
@@ -152,13 +178,53 @@ const App = (() => {
       const d = U.el('div', title ? { title } : null, U.el('dt', { text: k }), U.el('dd', { text: v }));
       dl.append(d);
     };
-    add('Lines', `${U.fmtInt(st.lines)} · ${U.count(st.dirs, 'folder')} · ${U.count(st.files, 'file')}`);
+    add('Files', U.fmtInt(st.files), `${U.count(st.lines, 'line')} in the expanded tree`);
+    add('Folders', U.fmtInt(st.dirs));
     add('Sections', String(s.sections.length), s.sections.map((x) => x.label).join(', '));
-    add('Mode', `${s.key.rootName} ${s.key.modeName}`, s.key.fromLang ? `From the dominant language: ${st.lang} (${Math.round(st.langShare * 100)}% of the code)` : 'No dominant language, so the mode comes from a hash of the name');
-    if (st.lang) add('Language', `${st.lang} ${Math.round(st.langShare * 100)}%`);
-    add('Tempo', `${s.bpm} BPM`, `Median name length: ${st.medianLen.toFixed(0)} characters`);
-    add('Grid', rateLabel(s.rate));
+    add('Key', `${s.key.rootName} ${s.key.modeName}`);
+    add('Tempo', `${s.bpm} BPM`);
     add('Length', U.fmtTime(s.duration));
+  }
+
+  // "Why it sounds like this": each trait of the tree next to what it became.
+  function renderTraits() {
+    const s = state.score, st = state.model.stats, ch = s.character, src = state.source;
+    const style = Styles.get(state.style);
+    const ul = $('traits');
+    ul.textContent = '';
+    const pct = (x) => `${Math.round(x * 100)}%`;
+    const add = (k, v, why, opts = {}) => {
+      const head = U.el('span', { class: 'trait-k' }, opts.cat ? U.el('span', { class: `dot cat-${opts.cat}` }) : null, k, opts.seek != null ? U.el('span', { class: 'go', text: `${U.fmtTime(opts.seek)} ↗` }) : null);
+      const body = [head, U.el('span', { class: 'trait-v', text: v }), U.el('span', { class: 'trait-why', text: why })];
+      const off = opts.off ? ' is-off' : '';
+      const node = opts.seek != null
+        ? U.el('button', { type: 'button', class: `trait${off}`, title: `Jump to ${U.fmtTime(opts.seek)}`, onclick: () => { Engine.unlock(); if (state.anim) { state.anim = null; state.p = 5; } seekTo(opts.seek); } }, ...body)
+        : U.el('div', { class: `trait${off}` }, ...body);
+      ul.append(U.el('li', null, node));
+    };
+    add('Key', s.key.rootName, `hashed from the name ${src.repo ? src.repo.full : src.name}`);
+    add('Mode', s.key.modeName, s.key.fromLang ? `${st.lang} is ${pct(st.langShare)} of the code` : 'no dominant language, so it comes from the name', { cat: 'code' });
+    add('Tempo', `${s.bpm} BPM`, state.bpm ? 'set by hand' : `names are ${Math.round(st.medianLen)} characters long (median)`);
+    if (ch.color) {
+      const kinds = Model.CAT_ORDER.filter((k) => st.catCount[k]).length;
+      add('Chord colour', { triad: 'plain triads', add9: 'added ninths', seventh: 'seventh chords' }[ch.color], `${kinds} kinds of files, variety ${pct(ch.entropy)}`);
+    }
+    if (style.testPerc) {
+      const on = ch.tests >= 0.05;
+      add('Percussion', on ? `${style.testPerc.kind === 'tamb' ? 'tambourine' : 'shaker'}${ch.tests >= 0.2 ? ', early' : ''}` : 'none', `${pct(ch.tests)} of the files are tests`, { cat: 'test', off: !on });
+    }
+    add('Hi-hats', ch.busyHats ? 'busy sixteenths' : 'steady', `${pct(ch.config)} config and tooling`, { cat: 'tool', off: !ch.busyHats });
+    if (style.pad) {
+      const db = 20 * Math.log10(ch.padMul);
+      add('Pads', `${db >= 0 ? '+' : '−'}${Math.abs(db).toFixed(1)} dB`, `${pct(ch.docs)} of the files are docs`, { cat: 'docs' });
+    }
+    add('Room', `${ch.room.toFixed(1)} s of reverb`, src.noSizes || !st.bytes ? `${U.count(st.files, 'file')} in total` : `${U.fmtBytes(st.bytes)} in total`, { cat: 'media' });
+    add('Runs', ch.runs ? U.count(ch.runs, 'climbing note') : 'none', ch.runs ? 'numbered files like 01, 02, 03' : 'no numbered files in a row', { off: !ch.runs });
+    for (const m of s.landmarks) {
+      const l = state.model.lines[m.line];
+      if (m.kind === 'peak') add('The peak', l.name, `the deepest file after the intro, ${l.depth} folders down`, { seek: m.t, cat: l.cat });
+      else add('The drop', l.name, `the biggest file, ${U.fmtBytes(l.size)}`, { seek: m.t, cat: l.cat });
+    }
   }
 
   function renderLegend() {
@@ -192,7 +258,7 @@ const App = (() => {
 
   function renderBpm() {
     const s = state.score;
-    $('bpmRange').value = String(s.bpm);
+    setRange($('bpmRange'), s.bpm);
     $('bpmOut').textContent = `${s.bpm}${state.bpm ? '' : ' · auto'}`;
     $('bpmAuto').disabled = !state.bpm;
   }
@@ -200,6 +266,7 @@ const App = (() => {
   function updateTotal() {
     $('timeTotal').textContent = U.fmtTime(state.score.duration);
     $('seekRange').max = String(state.score.duration);
+    fillRange($('seekRange'));
     ui.timeNow = ''; ui.seekVal = -1;
   }
 
@@ -208,7 +275,7 @@ const App = (() => {
     if (!ol.children.length) {
       PH.forEach((ph, k) => {
         const btn = U.el('button', { type: 'button', 'data-k': String(k), title: ph.label },
-          U.el('span', { class: 'num', text: String(k + 1) }), U.el('span', { text: ph.short }));
+          U.el('span', { class: 'num', text: String(k + 1) }), U.el('span', { class: 'lbl', text: ph.short }));
         btn.addEventListener('click', () => tweenTo(k + 1, 900));
         ol.append(U.el('li', null, btn));
       });
@@ -285,6 +352,7 @@ const App = (() => {
       add('Volume', `${U.count(l.len, 'character')} → ${Math.round(n.vel * 100)}%`);
       add('Brightness', `letter density ${l.dens.toFixed(2)} → ${Math.round(s.densN[i] * 100)}%`);
       add('Pan', `${l.sib + 1} of ${l.sibCount} → ${l.sibCount > 1 ? panLabel(((l.sib / (l.sibCount - 1)) * 2 - 1) * 0.35) : 'center'}`);
+      if (n.run) add('Run', `file ${n.run} of a numbered run → climbs the chord`);
       if (n.orn) add('Ornament', `type “${Model.CATS[l.cat].label.toLowerCase()}” ≠ section → ${Styles.instName(n.orn.inst)} ${s.noteName(n.orn.midi)}`, l.cat);
     } else if (l.isDir) {
       add('Contains', `${U.count(l.files, 'file')}, ${U.count(l.dirs, 'folder')}`);
@@ -318,10 +386,15 @@ const App = (() => {
   }
 
   // ---------- loading ----------
+  // Messages appear as a toast: notes fade after a while, errors stay a little longer.
+  let toastTimer = 0;
   function setStatus(text, isError) {
-    const s = $('status');
-    s.textContent = text || '';
-    s.classList.toggle('is-error', !!isError);
+    const toast = $('toast');
+    clearTimeout(toastTimer);
+    $('status').textContent = text || '';
+    toast.classList.toggle('is-error', !!isError);
+    toast.classList.toggle('is-on', !!text);
+    if (text) toastTimer = setTimeout(() => toast.classList.remove('is-on'), isError ? 12000 : 6000);
   }
   function showLoader(on, text) {
     $('loader').hidden = !on;
@@ -359,7 +432,7 @@ const App = (() => {
       player.setScore(score, 0);
       view.setData(model, score);
       panel.setModel(model);
-      renderHeader(); renderFacts(); renderSpeedOptions(); renderBpm(); renderLegend(); updateTotal(); markDemoChip();
+      renderHeader(); renderFacts(); renderTraits(); renderSpeedOptions(); renderBpm(); renderLegend(); updateTotal(); markDemoChip();
       setStatus(source.note || '');
       updateDeepLink(source);
       if (source.kind === 'github' || source.kind === 'jsdelivr') refreshQuota();
@@ -384,12 +457,12 @@ const App = (() => {
 
   function loadGitHub(spec, opts) {
     $('repoInput').value = `github.com/${spec.owner}/${spec.repo}${spec.refParts.length ? `/tree/${spec.refParts.join('/')}` : ''}`;
+    const demo = !spec.refParts.length && findDemo(spec);
     return load(async (onStatus) => {
       try {
-        return await Sources.fromGitHub(spec, { onStatus });
+        return await Sources.fromGitHub(spec, { onStatus, mirror: !demo });
       } catch (e) {
-        const demo = findDemo(spec);
-        if (demo && !spec.refParts.length && (e.code === 'network' || e.code === 'rate_limit')) {
+        if (demo && (e.code === 'network' || e.code === 'rate_limit')) {
           const src = Sources.fromDemo(demo);
           src.note = 'GitHub is unavailable right now, so you’re hearing a saved snapshot of this tree.';
           return src;
@@ -403,12 +476,13 @@ const App = (() => {
     const q = await Sources.rateLimit();
     const el = $('quota');
     el.classList.toggle('is-off', !q.ok);
-    if (q.bad) el.textContent = 'GitHub rejected the saved token. Update or remove it.';
-    else if (!q.ok) el.textContent = 'GitHub isn’t reachable from here (sandbox or no network). Examples, your own folder and file lists still work.';
+    const show = (text, title) => { el.textContent = text; el.title = title; };
+    if (q.bad) show('Token rejected', 'GitHub rejected the saved token. Update or remove it.');
+    else if (!q.ok) show('GitHub offline', 'GitHub isn’t reachable from here (sandbox or no network). Examples, your own folder and file lists still work.');
     else if (q.remaining != null) {
       const at = new Date(q.reset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      el.textContent = `GitHub API: ${q.remaining} of ${q.limit} requests left${q.remaining < q.limit ? `, resets at ${at}` : ''}. One repo uses two.`;
-    } else el.textContent = '';
+      show(`API ${q.remaining}/${q.limit}`, `GitHub API: ${q.remaining} of ${q.limit} requests left${q.remaining < q.limit ? `, resets at ${at}` : ''}. One repo uses two.`);
+    } else show('', '');
   }
 
   function markDemoChip() {
@@ -441,13 +515,16 @@ const App = (() => {
     state.score = score;
     player.setScore(score, np);
     view.setScore(score);
-    renderFacts(); renderSpeedOptions(); renderBpm(); renderLegend(); renderStyles(); updateTotal();
+    renderFacts(); renderTraits(); renderSpeedOptions(); renderBpm(); renderLegend(); renderStyles(); updateTotal();
     state.lastLine = -2;
     state.dirty = true;
   }
 
   function renderStyles() {
-    for (const b of $('styleSeg').querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.style === state.style ? 'true' : 'false');
+    for (const b of $('styleSeg').querySelectorAll('button')) {
+      b.setAttribute('aria-pressed', b.dataset.style === state.style ? 'true' : 'false');
+      b.title = Styles.get(b.dataset.style).hint;
+    }
     $('styleHint').textContent = Styles.get(state.style).hint;
   }
 
@@ -459,7 +536,7 @@ const App = (() => {
         Engine.unlock();
         if (state.style === key) return;
         state.style = key;
-        U.storage.set('filofon.style', key);
+        U.storage.set(STYLE_KEY, key);
         state.bpm = 0;
         if (state.model) recompose(); else renderStyles();
       });
@@ -478,7 +555,7 @@ const App = (() => {
     const btn = $('wavBtn');
     if (btn.disabled || !state.score) return;
     btn.disabled = true;
-    const label = btn.textContent;
+    const label = btn.innerHTML;
     try {
       setStatus('Rendering the audio to a file…');
       const buf = await Engine.renderOffline(state.score, { layers: player.layers, fx: player.fx }, (f) => { btn.textContent = `Rendering ${Math.round(f * 100)}%`; });
@@ -488,7 +565,7 @@ const App = (() => {
       setStatus(saveError(e, 'WAV'), true);
     } finally {
       btn.disabled = false;
-      btn.textContent = label;
+      btn.innerHTML = label;
     }
   }
   async function exportMidi() {
@@ -626,6 +703,7 @@ const App = (() => {
     let lastSeek = 0;
     sk.addEventListener('input', () => {
       ui.seekDragging = true;
+      fillRange(sk);
       if (performance.now() - lastSeek > 90) { seekTo(Number(sk.value)); lastSeek = performance.now(); }
     });
     sk.addEventListener('change', () => { seekTo(Number(sk.value)); ui.seekDragging = false; });
@@ -644,14 +722,16 @@ const App = (() => {
     }
 
     $('speedSel').addEventListener('change', (ev) => { state.speed = Number(ev.target.value); recompose(); });
-    $('bpmRange').addEventListener('input', (ev) => { $('bpmOut').textContent = ev.target.value; });
+    $('bpmRange').addEventListener('input', (ev) => { $('bpmOut').textContent = ev.target.value; fillRange(ev.target); });
     $('bpmRange').addEventListener('change', (ev) => { state.bpm = Number(ev.target.value); recompose(); });
     $('bpmAuto').addEventListener('click', () => { state.bpm = 0; recompose(); });
-    $('volRange').addEventListener('input', (ev) => player.setVolume(Number(ev.target.value) / 100));
+    $('volRange').addEventListener('input', (ev) => { player.setVolume(Number(ev.target.value) / 100); fillRange(ev.target); });
+    fillRange($('volRange'));
+    $('toastClose').addEventListener('click', () => { clearTimeout(toastTimer); $('toast').classList.remove('is-on'); });
 
     const mr = $('morphRange');
     mr.addEventListener('pointerdown', () => { ui.morphDragging = true; });
-    mr.addEventListener('input', () => { state.anim = null; state.autoplay = false; state.p = Number(mr.value); state.dirty = true; });
+    mr.addEventListener('input', () => { state.anim = null; state.autoplay = false; state.p = Number(mr.value); state.dirty = true; fillRange(mr); });
     const endDrag = () => { ui.morphDragging = false; state.dirty = true; };
     mr.addEventListener('change', endDrag);
     mr.addEventListener('pointerup', endDrag);
@@ -747,9 +827,10 @@ const App = (() => {
     const box = $('demoChips');
     for (const d of DEMOS) {
       const files = d.data.split('\n').length;
-      const b = U.el('button', { class: 'chip', type: 'button', 'data-repo': d.repo, 'aria-current': 'false', title: 'Built-in snapshot, plays without any GitHub requests' },
-        U.el('span', { text: d.repo }),
-        U.el('span', { class: 'n', text: U.count(files, 'file') }));
+      const [owner, name] = d.repo.split('/');
+      const b = U.el('button', { class: 'chip', type: 'button', 'data-repo': d.repo, 'aria-current': 'false', title: `${U.count(files, 'file')} · built-in snapshot, plays without any GitHub requests` },
+        U.el('span', { class: 'own', text: `${owner}/` }),
+        U.el('span', { text: name }));
       b.addEventListener('click', () => {
         Engine.unlock();
         $('repoInput').value = `github.com/${d.repo}`;

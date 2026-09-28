@@ -32,12 +32,15 @@ const Exporters = (() => {
   // ---- Standard MIDI File, format 1: one track per part and instrument ----
   const PROGRAM = {
     guitar: 24, rhodes: 4, vibes: 11, kalimba: 108, marimba: 12, musicbox: 10, glass: 8, sawpluck: 81,
-    pulse50: 80, pulse25: 80, pulse12: 80, tri: 80,
+    pulse50: 80, pulse25: 80, pulse12: 80, tri: 80, polylead: 81, brass: 62,
   };
   const PAD_PROGRAM = { warm: 89, air: 94, supersaw: 90 };
   const BASS_PROGRAM = { warm: 32, sub: 38, saw: 38, tri: 38 };
   const PART = { lead: 'Melody', arp: 'Arpeggio', orn: 'Ornaments', strum: 'Folders', comp: 'Keys', pad: 'Pad', bass: 'Bass' };
-  const DRUM_KEY = { kick: 36, snare: 38, clap: 39, rim: 37, hat: 42, ohat: 46, shaker: 70, crash: 49 };
+  const DRUM_KEY = {
+    kick: 36, snare: 38, gsnare: 40, clap: 39, rim: 37, hat: 42, ohat: 46, shaker: 70, tamb: 54, crash: 49,
+    tom1: 50, tom2: 47, tom3: 43, impact: 35,
+  };
 
   function vlq(n) {
     const bytes = [n & 0x7f];

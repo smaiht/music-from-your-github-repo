@@ -13,6 +13,16 @@
 //   place among siblings       -> stereo position of the arpeggio
 //   language -> mode, repo name -> key, median name length -> tempo
 //
+// Repo character (whole-track traits):
+//   variety of file types      -> chord colour: triads, add9, sevenths
+//   share of tests             -> an extra percussion part keeps time
+//   share of docs              -> how present the pads are
+//   share of config & tooling  -> busier hi-hats
+//   total size                 -> length of the reverb (the room)
+//   numbered runs (01, 02 …)   -> the arpeggio climbs step by step
+//   deepest file               -> the peak of the track
+//   biggest file               -> a drop: sub boom and cymbal
+//
 // Deterministic: the same tree and style always give the same score.
 
 const Composer = (() => {
@@ -70,6 +80,27 @@ const Composer = (() => {
     const seedName = (source.repo ? source.repo.full : source.name).toLowerCase();
     const seed = U.hash32(seedName);
     const rng = U.rng(seed ^ 0x5bd1e995);
+
+    // ---------- character: repo-wide traits ----------
+    const share = stats.catShare || {};
+    const ent = stats.typeEntropy || 0;
+    const sizeK = source.noSizes || !stats.bytes
+      ? U.clamp(Math.log10(Math.max(1, stats.files)) / 4, 0, 1)
+      : U.clamp((Math.log10(stats.bytes) - 4) / 4, 0, 1);
+    const character = {
+      entropy: ent,
+      color: style.color ? (ent < 0.5 ? 'triad' : ent < 0.72 ? 'add9' : 'seventh') : null,
+      tests: share.test || 0,
+      docs: share.docs || 0,
+      config: (share.tool || 0) + (share.data || 0),
+      busyHats: (share.tool || 0) + (share.data || 0) >= 0.3,
+      padMul: 0.8 + 0.5 * U.clamp((share.docs || 0) / 0.25, 0, 1),
+      room: Math.round(style.fx.ir * (0.75 + 0.6 * sizeK) * 10) / 10,
+      runs: stats.runs || 0,
+    };
+    const color = character.color || (style.leadTones === 'triad' ? 'triad' : 'seventh');
+    const chordType = style.color ? { triad: 'triad8', add9: 'add9', seventh: 'seventh' }[color] : style.chordType;
+    const arpTones = style.color ? color : style.arpTones;
 
     // ---------- key ----------
     const modeKey = LANG_MODE[stats.lang] || MODE_KEYS[seed % MODE_KEYS.length];
@@ -129,10 +160,11 @@ const Composer = (() => {
     const chordName = (d) => {
       const p = pcsOf(d);
       const third = (p[1] - p[0] + 12) % 12, fifth = (p[2] - p[0] + 12) % 12, sev = (p[3] - p[0] + 12) % 12;
-      const triadOnly = style.leadTones === 'triad';
-      if (fifth === 6) return pcName(p[0]) + 'm7♭5';
+      if (fifth === 6) return pcName(p[0]) + (color === 'triad' ? 'dim' : 'm7♭5');
       const q = third === 3 ? 'm' : '';
-      if (triadOnly) return pcName(p[0]) + q;
+      if (color === 'triad') return pcName(p[0]) + q;
+      // Without a clean ninth the add9 voicing falls back to the seventh (see tonesOf), so name it that way.
+      if (color === 'add9' && ninthOf(d) != null) return pcName(p[0]) + (q ? 'm(add9)' : 'add9');
       return pcName(p[0]) + q + (sev === 11 ? 'maj7' : '7');
     };
     const romanOf = (d) => {
@@ -143,6 +175,7 @@ const Composer = (() => {
       const p = pcsOf(d);
       if (kind === 'triad') return [p[0], p[1], p[2]];
       if (kind === 'open') { const n9 = ninthOf(d); return [p[0], p[2], n9 == null ? p[1] : n9]; }
+      if (kind === 'add9') { const n9 = ninthOf(d); return [p[0], p[1], p[2], n9 == null ? p[3] : n9]; }
       return p;
     };
 
@@ -229,6 +262,20 @@ const Composer = (() => {
       p.lvl = lvl;
       for (let b = p.b; b < p.z; b++) barLevel[b] = lvl;
     });
+    // The deepest file past the intro is the peak: its phrase plays at full strength.
+    // (Dot-folders sort first, so the tree's very deepest file often sits in the opening bars.)
+    const landmarks = [];
+    let deepest = -1;
+    for (let i = Math.floor(N * 0.2); i < N; i++) if (!lines[i].isDir && (deepest < 0 || lines[i].depth >= lines[deepest].depth)) deepest = i;
+    if (deepest > 0 && lines[deepest].depth >= 2) {
+      const t = timeOf(deepest);
+      const k = phrases.findIndex((p) => barOf(t) >= p.b && barOf(t) < p.z);
+      if (k > 0 && nBars >= 8) {
+        phrases[k].lvl = 3;
+        for (let b = phrases[k].b; b < phrases[k].z; b++) barLevel[b] = 3;
+      }
+      landmarks.push({ kind: 'peak', line: deepest, t, bar: k >= 0 ? phrases[k].b : barOf(t) });
+    }
     const levelAt = (t) => barLevel[barOf(t)];
 
     // Swing the off-beat 16ths.
@@ -309,8 +356,17 @@ const Composer = (() => {
       const vel = (0.72 + 0.28 * amp[i]) * LVL[lvl];
       const inst = sections[s].inst;
       const ev = { t: swing(t), k: 'lead', inst, midi, vel, dur, pan: 0, bright: 0.45 + 0.55 * densN[i], line: i };
+      // A long note (big file) that runs into the next one slides into it.
+      if (style.glide && lastLead && lastLead.inst === inst && lastLead.legato && midi !== lastLead.midi && Math.abs(midi - lastLead.midi) <= 7) ev.from = lastLead.midi;
+      ev.legato = dur >= gap * 0.85 && next - t <= beat * 1.01;
       events.push(ev);
       if (style.double && lvl >= 3) events.push({ ...ev, midi: midi + 12, vel: vel * 0.32, k: 'orn' });
+      if (style.harmony && lvl >= 3) {
+        const tones = tonesOf(d, 'triad');
+        for (let m = midi - 3; m >= midi - 9; m--) {
+          if (tones.includes(((m % 12) + 12) % 12)) { events.push({ ...ev, k: 'orn', midi: m, vel: vel * 0.7, from: undefined }); break; }
+        }
+      }
       notes[i] = { role: 'lead', midi, vel, dur, inst, sec: s, lvl };
       lastLead = ev;
     });
@@ -320,7 +376,7 @@ const Composer = (() => {
     const arpCache = new Map();
     const arpNotes = (d) => {
       if (arpCache.has(d)) return arpCache.get(d);
-      const tones = tonesOf(d, style.arpTones);
+      const tones = tonesOf(d, arpTones);
       let r0 = style.arpBase;
       while ((((r0 % 12) + 12) % 12) !== tones[0]) r0++;
       const out = [];
@@ -328,7 +384,7 @@ const Composer = (() => {
       arpCache.set(d, out);
       return out;
     };
-    let patPos = 0, prevParent = -2, lastOrn = -1e9;
+    let patPos = 0, prevParent = -2, lastOrn = -1e9, runFrom = null;
     for (let a = 0; a < N; a += arpK) {
       const z = Math.min(N, a + arpK);
       let rep = -1;
@@ -341,14 +397,23 @@ const Composer = (() => {
       if (l.parent !== prevParent) { patPos = 0; prevParent = l.parent; }
       const d = chordAtBar(barOf(t));
       const list = arpNotes(d);
-      let midi = list[style.arpPattern[patPos % style.arpPattern.length] % list.length];
+      let midi;
+      if (l.seq) {
+        // A numbered run climbs through the chord one step per file.
+        // It starts low in the chord so there is room to rise.
+        if (l.seq === 1 || runFrom === null) runFrom = (style.arpPattern[patPos % style.arpPattern.length] % 3) - (l.seq - 1);
+        midi = list[(((runFrom + l.seq - 1) % list.length) + list.length) % list.length];
+      } else {
+        runFrom = null;
+        midi = list[style.arpPattern[patPos % style.arpPattern.length] % list.length];
+      }
       patPos++;
       if (l.depth >= 3) midi += 12;
       const lvl = levelAt(t);
       const vel = (0.3 + 0.24 * amp[rep]) * LVL[lvl];
       const pan = l.sibCount > 1 ? ((l.sib / (l.sibCount - 1)) * 2 - 1) * 0.35 : 0;
       events.push({ t: swing(t), k: 'arp', inst: style.arpInst, midi, vel, dur: arpK * lineDur * style.arpLen, pan, bright: 0.3 + 0.7 * densN[rep], line: rep });
-      notes[rep] = { role: 'arp', midi, vel, inst: style.arpInst, sec: secOfLine[rep], lvl };
+      notes[rep] = { role: 'arp', midi, vel, inst: style.arpInst, sec: secOfLine[rep], lvl, run: l.seq || 0 };
       // A file of another type than its section's lead family adds a quiet ornament.
       const s = sections[secOfLine[rep]];
       if (l.cat !== s.cat && lvl >= 1 && t - lastOrn >= beat * 0.99) {
@@ -372,6 +437,8 @@ const Composer = (() => {
       const tones = arpNotes(d);
       if (style.dirHit === 'blip') {
         events.push({ t, k: 'strum', inst: 'pulse12', notes: tones.slice(0, 4), gap: stepDur / 2, vel: 0.28 * LVL[lvl], dur: stepDur, line: i });
+      } else if (style.dirHit === 'brass') {
+        events.push({ t, k: 'strum', inst: 'brass', notes: tones.slice(0, 4), gap: 0.003, vel: (0.3 + 0.2 * amp[i]) * LVL[lvl], dur: beat * 0.9, bright: 0.4 + 0.5 * densN[i], line: i });
       } else {
         const inst = { strum: 'guitar', stab: 'sawpluck', bell: 'glass' }[style.dirHit] || 'glass';
         const gap = style.dirHit === 'stab' ? 0.004 : style.dirHit === 'bell' ? 0.06 : 0.018;
@@ -387,7 +454,7 @@ const Composer = (() => {
       const d = barDeg[b];
       const lastC = chords[chords.length - 1];
       if (lastC && lastC.deg === d && lastC.sec === secOfBar[b]) { lastC.dur += barDur; lastC.bars++; continue; }
-      const voicing = voiceFor(d, style.chordType, prevVoicing);
+      const voicing = voiceFor(d, chordType, prevVoicing);
       prevVoicing = voicing;
       chords.push({ t: b * barDur, dur: barDur, bars: 1, bar: b, deg: d, pcs: pcsOf(d), name: chordName(d), roman: romanOf(d), voicing, sec: secOfBar[b] });
     }
@@ -410,7 +477,7 @@ const Composer = (() => {
         if (on && !open) {
           let dens = 0, n = 0;
           for (let i = lineAt(c.t); i < Math.min(N, lineAt(c.t + c.dur) + 1); i++) { dens += densN[i]; n++; }
-          open = { c, ev: { t: b * barDur, k: 'pad', notes: c.voicing, vel: (0.5 + 0.12 * barLevel[b]) * style.padGain, dur: 0, bright: n ? dens / n : 0.5 } };
+          open = { c, ev: { t: b * barDur, k: 'pad', notes: c.voicing, vel: (0.5 + 0.12 * barLevel[b]) * style.padGain * character.padMul, dur: 0, bright: n ? dens / n : 0.5 } };
         }
         if (open) open.ev.dur += barDur;
       }
@@ -435,14 +502,28 @@ const Composer = (() => {
     const ACC = {
       kick: (p) => (p === 0 ? 1 : 0.86), snare: (p) => (p === 4 || p === 12 ? 1 : 0.45), clap: () => 0.9, rim: () => 0.7,
       hat: (p) => (p % 4 === 0 ? 0.8 : p % 2 === 0 ? 0.6 : 0.42), ohat: () => 0.6, shaker: () => 0.5,
+      gsnare: (p) => (p === 4 || p === 12 ? 1 : 0.5), tamb: (p) => (p % 4 === 2 ? 0.85 : 0.5),
     };
+    const percFrom = character.tests >= 0.2 ? 1 : 2;
+    const percVel = 0.55 + 0.45 * U.clamp(character.tests / 0.3, 0, 1);
+    let lastRise = -1e9, lastBoom = -1e9;
     for (let b = 0; b < nBars; b++) {
-      const lvl = barLevel[b], g = style.grooves[lvl];
+      const lvl = barLevel[b];
+      let g = style.grooves[lvl];
+      // Config-heavy repos (lots of yml, json, scripts) keep the hats busy a level early.
+      if (g && lvl === 2 && character.busyHats && style.grooves[3] && style.grooves[3].hat) g = { ...g, hat: style.grooves[3].hat };
       const t0 = b * barDur;
       const newSec = b > 0 && secOfBar[b] !== secOfBar[b - 1];
       if (newSec && lvl >= 1) {
         if (style.sectionHit === 'crash') events.push({ t: t0, k: 'crash', vel: 0.55 });
         else if (style.sectionHit === 'swell') events.push({ t: Math.max(0, t0 - 1.35), k: 'swell', vel: 0.45 });
+        // Build into a louder section: a noise riser over the last bar or two, a sub boom on the downbeat.
+        const rising = lvl >= 2 && (lvl > barLevel[b - 1] || lvl === 3);
+        if (style.riser && rising && b - lastRise >= 8) {
+          const len = Math.min(t0, Math.min(barDur * 2, Math.max(barDur, 4.5)));
+          if (len >= barDur * 0.99) { events.push({ t: t0 - len, k: 'riser', dur: len, vel: 0.5 + 0.12 * lvl }); lastRise = b; }
+        }
+        if (style.impact && lvl >= 2 && (lvl === 3 || b - lastBoom >= 16)) { events.push({ t: t0, k: 'impact', vel: 0.75 + 0.1 * (lvl - 2) }); lastBoom = b; }
       }
       if (lvl < style.drumMinLevel || !g) continue;
       const hits = {};
@@ -450,14 +531,21 @@ const Composer = (() => {
         const pat = g[kind];
         for (let p = 0; p < 16; p++) if (pat[p] === 'x') (hits[kind] = hits[kind] || new Float32Array(16))[p] = ACC[kind] ? ACC[kind](p) : 0.7;
       }
+      // Tests keep time: repos with a test suite get an extra percussion part.
+      if (style.testPerc && character.tests >= 0.05 && lvl >= percFrom) {
+        const { kind, pat } = style.testPerc;
+        const h = (hits[kind] = hits[kind] || new Float32Array(16));
+        for (let p = 0; p < 16; p++) if (pat[p] === 'x') h[p] = Math.max(h[p], (ACC[kind] ? ACC[kind](p) : 0.6) * percVel);
+      }
       const nextNew = b + 1 < nBars && secOfBar[b + 1] !== secOfBar[b];
-      if (nextNew && style.fill && lvl >= 1) {
-        const from = style.fill === 'snare3' ? 13 : lvl >= 2 ? 8 : 12;
-        hits.snare = hits.snare || new Float32Array(16);
+      if (nextNew && style.fills.length && lvl >= 1) {
+        const fill = style.fills[U.hash32(`${seedName}:fill:${sections[secOfBar[b + 1]].key}`) % style.fills.length];
+        const from = fill === 'snare3' ? 13 : lvl >= 2 ? 8 : 12;
+        const kinds = fill === 'toms' ? ['tom1', 'tom2', 'tom3'] : ['snare'];
         for (let p = from; p < 16; p++) {
-          hits.snare[p] = 0.3 + (0.5 * (p - from + 1)) / (16 - from);
-          if (hits.hat) hits.hat[p] = 0;
-          if (hits.ohat) hits.ohat[p] = 0;
+          const k = kinds[Math.min(kinds.length - 1, Math.floor(((p - from) * kinds.length) / (16 - from)))];
+          (hits[k] = hits[k] || new Float32Array(16))[p] = fill === 'toms' ? 0.6 + (0.35 * (p - from + 1)) / (16 - from) : 0.3 + (0.5 * (p - from + 1)) / (16 - from);
+          for (const quiet of ['hat', 'ohat', 'tamb', 'shaker']) if (hits[quiet]) hits[quiet][p] = 0;
         }
       }
       for (const kind of Object.keys(hits)) {
@@ -471,24 +559,49 @@ const Composer = (() => {
       }
     }
 
+    // ---------- landmarks: the peak and the drop ----------
+    const peak = landmarks.find((m) => m.kind === 'peak');
+    if (peak && peak.t < linesEnd) {
+      // A high sparkle on the deepest file itself.
+      const tones = arpNotes(chordAtBar(barOf(peak.t))).map((m) => m + 12);
+      events.push({ t: peak.t, k: 'strum', inst: 'glass', notes: tones.slice(0, 4), gap: stepDur / 2, vel: 0.34, dur: barDur, line: peak.line });
+      if (barLevel[peak.bar] >= 3 && peak.bar > 0 && secOfBar[peak.bar] === secOfBar[peak.bar - 1]) events.push({ t: peak.bar * barDur, k: style.sectionHit === 'crash' ? 'crash' : 'swell', vel: 0.5, ...(style.sectionHit === 'crash' ? {} : { t: Math.max(0, peak.bar * barDur - 1.35) }) });
+    }
+    if (stats.biggest > 0) {
+      // The biggest file lands on the next beat with a drop.
+      const t = Math.ceil(timeOf(stats.biggest) / beat - 1e-9) * beat;
+      if (t > barDur && t < codaStart - beat) {
+        landmarks.push({ kind: 'drop', line: stats.biggest, t });
+        // A section change may already hit here; don't stack a second boom on it.
+        const near = (k) => events.some((e) => e.k === k && Math.abs(e.t - t) < beat * 0.5);
+        if (style.impact && !near('impact')) events.push({ t, k: 'impact', vel: 0.9 });
+        if (style.sectionHit === 'crash') { if (!near('crash')) events.push({ t, k: 'crash', vel: 0.5 }); }
+        else if (!events.some((e) => e.k === 'swell' && Math.abs(e.t + 1.35 - t) < beat * 0.5)) events.push({ t: Math.max(0, t - 1.35), k: 'swell', vel: 0.4 });
+      }
+    }
+
     // ---------- coda: home to the tonic ----------
     const codaDur = barDur * 2;
-    const homeVoicing = voiceFor(0, style.chordType, prevVoicing);
+    const homeVoicing = voiceFor(0, chordType, prevVoicing);
     const homeTones = arpNotes(0);
-    const hitInst = { strum: 'guitar', stab: 'sawpluck', bell: 'glass', blip: 'pulse12' }[style.dirHit] || 'glass';
+    const hitInst = { strum: 'guitar', stab: 'sawpluck', bell: 'glass', blip: 'pulse12', brass: 'sawpluck' }[style.dirHit] || 'glass';
     events.push({ t: codaStart, k: 'strum', inst: hitInst, notes: homeTones.slice(0, 5), gap: 0.03, vel: 0.5, dur: codaDur });
     if (style.comp) events.push({ t: codaStart, k: 'comp', inst: style.comp, notes: homeVoicing, gap: 0.03, vel: 0.45, dur: codaDur });
-    if (style.pad) events.push({ t: codaStart, k: 'pad', notes: homeVoicing, vel: 0.6 * style.padGain, dur: codaDur, bright: 0.5, fade: true });
+    if (style.pad) events.push({ t: codaStart, k: 'pad', notes: homeVoicing, vel: 0.6 * style.padGain * character.padMul, dur: codaDur, bright: 0.5, fade: true });
     const lastSec = sections[sections.length - 1];
     events.push({ t: codaStart, k: 'lead', inst: lastSec.inst, midi: nearestTone(degMidi(lastLead ? degOf(lastLead.midi) : 7), [root]), vel: 0.8, dur: codaDur * 0.8, pan: 0, bright: 0.6, line: -1 });
     events.push({ t: codaStart, k: 'bass', midi: bassOf(root), vel: 0.85, dur: barDur * 1.5 });
     if (barLevel[nBars - 1] >= 1) {
       events.push({ t: codaStart, k: 'kick', vel: 0.9 });
+      if (style.impact) events.push({ t: codaStart, k: 'impact', vel: 0.7 });
       events.push({ t: codaStart, k: style.sectionHit === 'crash' ? 'crash' : 'swell', vel: 0.45, ...(style.sectionHit === 'crash' ? {} : { t: codaStart - 1.35 }) });
     }
     chords.push({ t: codaStart, dur: codaDur, bars: 2, deg: 0, pcs: pcsOf(0), name: chordName(0), roman: romanOf(0), voicing: homeVoicing, coda: true, sec: sections.length - 1 });
 
-    const ORDER = { pad: 0, comp: 1, bass: 2, kick: 3, snare: 4, clap: 4, rim: 5, hat: 6, ohat: 6, shaker: 6, crash: 7, swell: 7, strum: 8, arp: 9, orn: 10, lead: 11 };
+    const ORDER = {
+      pad: 0, comp: 1, bass: 2, kick: 3, impact: 3, snare: 4, gsnare: 4, clap: 4, rim: 5, tom1: 5, tom2: 5, tom3: 5,
+      hat: 6, ohat: 6, shaker: 6, tamb: 6, crash: 7, swell: 7, riser: 7, strum: 8, arp: 9, orn: 10, lead: 11,
+    };
     events.sort((x, y) => x.t - y.t || (ORDER[x.k] || 0) - (ORDER[y.k] || 0));
 
     return {
@@ -498,6 +611,8 @@ const Composer = (() => {
       key: { root, rootName: pcName(root), modeKey, modeName: MODES[modeKey].name, fromLang: !!LANG_MODE[stats.lang] },
       lang: stats.lang, noteName,
       events, chords, notes, sections, barLevel, energy, amp, densN, sizeN,
+      character, room: character.room, landmarks,
+      sweep: style.introSweep && nBars >= 4 ? Math.min(4 * barDur, codaStart / 4) : 0,
       timeOf, lineAt,
       chordAt: (t) => chordOfBar[barOf(t)],
       levelAt,
@@ -507,6 +622,8 @@ const Composer = (() => {
       const p = pcsOf(d), n9 = ninthOf(d);
       if (type === 'rootless9') return voiceLead([p[1], p[2], p[3], n9 == null ? p[0] : n9], prev, 52, 74);
       if (type === 'open') return voiceLead([p[0], p[2], n9 == null ? p[1] : n9, p[1]], prev, 48, 76, 24);
+      if (type === 'add9') return voiceLead([p[0], p[2], n9 == null ? p[3] : n9, p[1]], prev, 50, 76, 22);
+      if (type === 'seventh') return voiceLead([p[0], p[1], p[2], p[3]], prev, 52, 76);
       const v = voiceLead([p[0], p[1], p[2]], prev && prev.slice(0, 3), 55, 74);
       return type === 'triad8' ? v.concat(v[0] + 12) : v;
     }

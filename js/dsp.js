@@ -116,6 +116,21 @@ const DSP = (() => {
     return res;
   }
 
+  // Stereo version of finish(): one gain and one tail for both channels.
+  function finishStereo(L, R, peak) {
+    const k = peak / Math.max(peakOf(L), peakOf(R));
+    let last = L.length - 1;
+    while (last > 0 && Math.abs(L[last] * k) < 2e-4 && Math.abs(R[last] * k) < 2e-4) last--;
+    const n = Math.min(L.length, last + Math.round(0.02 * SR));
+    const fade = Math.min(n, Math.round(0.012 * SR));
+    return [L, R].map((d) => {
+      const res = d.subarray(0, n);
+      for (let i = 0; i < n; i++) res[i] *= k;
+      for (let i = 0; i < fade; i++) res[n - 1 - i] *= i / fade;
+      return res;
+    });
+  }
+
   const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
   // ---------- pitched instruments ----------
@@ -255,6 +270,66 @@ const DSP = (() => {
     return finish(out, 0.8);
   }
 
+  // The 80s snare: a tuned body and a noise snap drowned in a dense, wide room
+  // that a noise gate slams shut after o.gate seconds.
+  function gatedSnare(o, seed) {
+    const n = Math.ceil(o.len * SR), L = new Float32Array(n), R = new Float32Array(n);
+    const rnd = noise(seed), rl = noise(seed + 17), rr = noise(seed + 29);
+    const hp = biquad('hp', 450, 0.7), lp = biquad('lp', 9500, 0.7);
+    const lhp = biquad('hp', 500, 0.7), llp = biquad('lp', 5200, 0.6), rhp = biquad('hp', 500, 0.7), rlp = biquad('lp', 5200, 0.6);
+    let p1 = 0, p2 = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      const bend = 1 + 0.45 * Math.exp(-t / 0.01);
+      p1 += (2 * Math.PI * o.t1 * bend) / SR;
+      p2 += (2 * Math.PI * o.t2 * bend) / SR;
+      const body = (Math.sin(p1) * 0.7 + Math.sin(p2) * 0.3) * Math.exp(-t / 0.055);
+      const snap = lp(hp(rnd())) * Math.exp(-t / 0.075);
+      const gate = t < o.gate ? 1 : Math.max(0, 1 - (t - o.gate) / 0.03);
+      const swell = Math.min(1, t / 0.012) * Math.exp(-t / 0.6) * gate * o.room;
+      const dry = (body * 0.85 + snap) * Math.min(1, t / 0.0005);
+      L[i] = dry + llp(lhp(rl())) * swell;
+      R[i] = dry + rlp(rhp(rr())) * swell;
+    }
+    return finishStereo(L, R, 0.9);
+  }
+
+  // Electronic toms (Simmons-style): a sine that drops a fifth, a stick click, a short gated room.
+  function tom(o, seed) {
+    const n = Math.ceil(0.7 * SR), L = new Float32Array(n), R = new Float32Array(n);
+    const rnd = noise(seed), rl = noise(seed + 5), rr = noise(seed + 7);
+    const hp = biquad('hp', 2500, 0.7), lbp = biquad('bp', o.f * 3, 0.8), rbp = biquad('bp', o.f * 3.2, 0.8);
+    let ph = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      const f = o.f * (1 + 0.5 * Math.exp(-t / 0.07));
+      ph += (2 * Math.PI * f) / SR;
+      const body = Math.tanh(1.6 * Math.sin(ph)) * Math.exp(-t / o.decay);
+      const click = hp(rnd()) * 0.35 * Math.exp(-t / 0.004);
+      const gate = t < 0.28 ? 1 : Math.max(0, 1 - (t - 0.28) / 0.04);
+      const room = Math.min(1, t / 0.01) * Math.exp(-t / 0.4) * gate * 0.22;
+      L[i] = body + click + lbp(rl()) * room;
+      R[i] = body + click + rbp(rr()) * room;
+    }
+    return finishStereo(L, R, 0.85);
+  }
+
+  // Sub drop for big moments: a sine falling from o.f0 to o.f1, a low thump of noise, a soft clipped edge.
+  function impact(o, seed) {
+    const n = Math.ceil(o.len * SR), out = new Float32Array(n), rnd = noise(seed);
+    const lp = biquad('lp', 260, 0.7), lp2 = biquad('lp', 1800, 0.7);
+    let ph = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      const f = o.f1 + (o.f0 - o.f1) * Math.exp(-t / 0.35);
+      ph += (2 * Math.PI * f) / SR;
+      const sub = Math.sin(ph) * Math.min(1, t / 0.002) * Math.exp(-t / (o.len * 0.38));
+      const thump = lp(rnd()) * 2.5 * Math.exp(-t / 0.09) + lp2(rnd()) * 0.25 * Math.exp(-t / 0.02);
+      out[i] = Math.tanh((sub + thump) * 1.5);
+    }
+    return finish(out, 0.95);
+  }
+
   // 808-style metallic hats: six detuned square waves, high-passed.
   function metal(o, seed) {
     const n = Math.ceil((o.decay * 5 + 0.02) * SR), out = new Float32Array(n), rnd = noise(seed);
@@ -283,6 +358,15 @@ const DSP = (() => {
     return finish(out, 0.6);
   }
 
+  // Stereo white noise for live risers (filtered and swept at playback).
+  function noiseBuffer() {
+    return cached('fx:noise', () => {
+      const n = 3 * SR, L = new Float32Array(n), R = new Float32Array(n), a = noise(501), b = noise(502);
+      for (let i = 0; i < n; i++) { L[i] = a(); R[i] = b(); }
+      return toBuffer([L, R]);
+    });
+  }
+
   const KITS = {
     lofi: {
       kick: () => kick({ f0: 118, f1: 46, pd: 0.03, ad: 0.19, click: 0.1, drive: 1.7, len: 0.55, lp: 3200 }, 1),
@@ -300,6 +384,12 @@ const DSP = (() => {
       hat: () => metal({ decay: 0.035, hp: 7600, noise: 0.25, tune: 1.05, peak: 0.6 }, 14),
       ohat: () => metal({ decay: 0.3, hp: 7400, noise: 0.25, tune: 1.05, peak: 0.55 }, 15),
       crash: () => metal({ decay: 1.3, hp: 3200, noise: 0.5, tune: 1.35, peak: 0.65 }, 16),
+      gsnare: () => gatedSnare({ t1: 190, t2: 330, gate: 0.26, room: 0.75, len: 0.4 }, 17),
+      tom1: () => tom({ f: 196, decay: 0.2 }, 18),
+      tom2: () => tom({ f: 147, decay: 0.24 }, 19),
+      tom3: () => tom({ f: 104, decay: 0.3 }, 20),
+      tamb: () => metal({ decay: 0.06, hp: 7800, noise: 0.55, tune: 2.3, peak: 0.5 }, 26),
+      impact: () => impact({ f0: 120, f1: 34, len: 2.2 }, 27),
     },
     chip: {
       kick: () => kick({ f0: 230, f1: 52, pd: 0.022, ad: 0.11, click: 0, drive: 3, len: 0.25, square: true }, 21),
@@ -327,9 +417,9 @@ const DSP = (() => {
         return toBuffer([finish(src, 0.6)]);
       });
     }
-    const make = k[name] || KITS.lofi[name];
+    const make = k[name] || KITS.lofi[name] || KITS.synth[name];
     if (!make) return null;
-    return cached(`d:${kit}:${name}`, () => toBuffer([make()]));
+    return cached(`d:${kit}:${name}`, () => { const d = make(); return toBuffer(Array.isArray(d) ? d : [d]); });
   }
 
   // ---------- atmosphere ----------
@@ -387,5 +477,5 @@ const DSP = (() => {
     if (onProgress) onProgress(1);
   }
 
-  return { SR, note, noteKey, isSampled, drum, crackle, impulse, prepare, has, setContext, INSTRUMENTS: Object.keys(INSTRUMENTS) };
+  return { SR, note, noteKey, isSampled, drum, crackle, noiseBuffer, impulse, prepare, has, setContext, INSTRUMENTS: Object.keys(INSTRUMENTS) };
 })();

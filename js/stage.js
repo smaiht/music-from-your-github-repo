@@ -63,6 +63,7 @@ const Stage = (() => {
         ink: cssVar('--ink') || '#151816', ink2: cssVar('--ink-2') || '#4b524e', ink3: cssVar('--ink-3') || '#858c88',
         gridFine: cssVar('--grid-fine') || 'rgba(214,110,50,.1)', gridMajor: cssVar('--grid-major') || 'rgba(214,110,50,.22)',
         band: cssVar('--band') || 'rgba(0,0,0,.035)', hl: cssVar('--hl') || 'rgba(255,200,0,.25)',
+        focus: cssVar('--focus') || '#d95f22',
       };
       t.cats = CAT_KEYS.map((k) => (k === 'dir' ? t.ink : cssVar(`--cat-${k}`) || '#888'));
       this.theme = t;
@@ -613,6 +614,24 @@ const Stage = (() => {
           const w = x.measureText(label).width;
           x.fillText(label, U.clamp(xx - w / 2, 0, W - w), H - 3);
         }
+        // landmarks: the peak and the drop
+        x.font = `600 10px ${FONT_MONO}`;
+        x.textBaseline = 'middle';
+        for (const m of score.landmarks || []) {
+          if (m.t > total) continue;
+          const xx = Math.round(X(m.t));
+          x.globalAlpha = played ? 0.9 : 0.6;
+          x.fillStyle = t.focus;
+          for (let y = top; y < bottom; y += 4) x.fillRect(xx, y, 1, 2);
+          const label = m.kind === 'peak' ? '▲ peak' : '▼ drop';
+          const w = x.measureText(label).width + 8;
+          const lx = xx + w + 2 > W ? xx - w - 1 : xx + 1;
+          x.fillRect(lx, bottom - 13, w, 12);
+          x.globalAlpha = 1;
+          x.fillStyle = t.sheet;
+          x.fillText(label, lx + 4, bottom - 6.5);
+        }
+        x.globalAlpha = 1;
       }
       this.caches.roll = { dim, lit };
       return this.caches.roll;

@@ -1,6 +1,7 @@
 'use strict';
 // Turns a flat list of paths into the fully expanded tree, one line per node,
-// and measures every line: name length, ink density, entropy, type, size.
+// and measures every line: name length, ink density, entropy, type, size, and
+// its place in a numbered run (001.png, 002.png, …).
 
 const FONT_MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
@@ -191,7 +192,7 @@ const Model = (() => {
         size: n.size, ext, cat: n.isDir ? 'dir' : categorize(n.name, path, ext),
         parent: f.parent, sib: f.sib, sibCount: f.sibCount, last: f.last, guides: f.guides,
         len: chars.length, dens: 0, ent: entropy(chars), rank: letterRank(n.name), lead: leadChar(n.name),
-        end: i + 1, files: 0, dirs: 0, bytes: 0,
+        end: i + 1, files: 0, dirs: 0, bytes: 0, seq: 0,
       });
       if (n.isDir) {
         const kids = Array.from(n.kids.values()).sort(byOrder);
@@ -217,8 +218,28 @@ const Model = (() => {
       }
     }
 
+    markRuns(lines);
     measureInk(lines);
     return { source, lines, stats: stats(lines, source) };
+  }
+
+  // Numbered siblings (frame-1, frame-2, frame-3) form a run: seq counts 1, 2, 3 …
+  // Files follow their folder's subfolders, so run members are adjacent lines.
+  function markRuns(lines) {
+    const numOf = (name) => {
+      const m = name.match(/^(.*\D)?(\d+)(\D*)$/);
+      return m ? { stem: `${m[1] || ''}#${m[3]}`, n: Number(m[2]) } : null;
+    };
+    let prev = null, prevNum = null;
+    for (const l of lines) {
+      const num = l.isDir ? null : numOf(l.name);
+      if (num && prev && prev.parent === l.parent && prevNum && prevNum.stem === num.stem && num.n === prevNum.n + 1) {
+        if (!prev.seq) prev.seq = 1;
+        l.seq = prev.seq + 1;
+      }
+      prev = l.isDir ? null : l;
+      prevNum = num;
+    }
   }
 
   function measureInk(lines) {
@@ -251,8 +272,24 @@ const Model = (() => {
     if (lang) langShare = langBytes.get(lang) / total;
     const lens = lines.map((l) => l.len);
     const dens = lines.map((l) => l.dens);
+    // Shares of each file family, and how evenly the files spread across them (0 = one kind, 1 = all seven equally).
+    const catShare = {};
+    let typeEntropy = 0;
+    for (const k of CAT_ORDER) {
+      const p = files.length ? (catCount[k] || 0) / files.length : 0;
+      catShare[k] = p;
+      if (p > 0) typeEntropy -= p * Math.log2(p);
+    }
+    typeEntropy /= Math.log2(CAT_ORDER.length);
+    // The biggest file becomes the track's drop.
+    let biggest = -1;
+    for (const l of files) {
+      if (!source.noSizes && l.size > 0 && (biggest < 0 || l.size > lines[biggest].size)) biggest = l.i;
+    }
     return {
       lines: lines.length, files: files.length, dirs: lines.length - files.length, maxDepth, bytes, catCount,
+      catShare, typeEntropy, biggest,
+      runs: lines.reduce((n, l) => n + (l.seq ? 1 : 0), 0),
       lang, langShare,
       medianLen: U.percentile(lens, 0.5),
       lenRef: Math.max(8, Math.ceil(U.percentile(lens, 0.98))),

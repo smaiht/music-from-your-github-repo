@@ -29,10 +29,15 @@ and play without a network. To refresh them or add your own: `python3 tools/make
 
 ## Playback
 
-The page opens with a repo and starts playing on its own once the transformation finishes,
-if the browser allows sound without a click. Most browsers block that on a first visit;
-then the page shows a play button over the wave and waits. Play, position, loop and volume
-sit in a bar under the repo title that sticks to the top of the window while you scroll.
+The page opens with a repo in the **synthwave** style and starts playing on its own once the
+transformation finishes, if the browser allows sound without a click. Most browsers block that
+on a first visit; then the page shows a play button over the wave and waits. Play, position,
+the file that is sounding right now, loop and volume sit in a bar under the repo title that
+sticks to the top of the window while you scroll.
+
+Under the wave, **Why it sounds like this** lists what this particular tree is made of and
+what each trait became. The peak and the drop are marked on the piano roll; click their cards
+to jump there.
 
 ## How the tree becomes music
 
@@ -54,17 +59,33 @@ tree drives notes inside a musical frame instead.
 | Dominant language | Mode (Python is Dorian, JavaScript Mixolydian, Rust minor …) |
 | Repository name | Key |
 | Median name length | Tempo within the style |
+| Numbered files (frame-1, frame-2 …) | The arpeggio climbs one chord tone per file |
 
-Styles: **lo-fi** (electric piano, nylon guitar, soft drums, vinyl and tape),
-**ambient** (pads, bells, long reverb), **synthwave** (four-on-the-floor kick, saw
-bass, arpeggiator, sidechain), **chiptune** (8-bit squares and noise drums).
+The whole repo also sets the character of the track:
+
+| Repo trait | What you hear |
+|---|---|
+| Variety of file types | Chord colour: plain triads, added ninths or sevenths |
+| Share of tests | A shaker or tambourine joins in (from 5% tests; from 20% it starts early) |
+| Share of docs | How present the pads are |
+| Share of config and tooling (30%+) | Hi-hats go to sixteenths a level early |
+| Total size | Length of the reverb, from a small room to a hall |
+| Deepest file after the intro | The peak: its phrase plays at full strength, with a high sparkle |
+| Biggest file | The drop: a sub boom and a cymbal on the next beat |
+
+Styles: **synthwave** (the default: poly synth lead with glide, supersaw pads, gated 80s snare,
+electronic toms, saw bass, arpeggiator, risers, sub drops, sidechain, a filtered intro),
+**lo-fi** (electric piano, nylon guitar, soft drums, vinyl and tape), **ambient** (pads, bells,
+long reverb), **chiptune** (8-bit squares, harmonies and noise drums).
 
 Sound is synthesised in the browser. Guitar, electric piano, vibraphone, kalimba, marimba,
 music box and bells are pre-rendered from a model of a string or bar (every overtone decays
-at its own rate); drums are built like those of the 808/909 drum machines. Effects: plate
+at its own rate); the lead, brass, pads and basses are live analogue-style oscillators with
+filter envelopes; drums are built like those of the 808/909 drum machines. Effects: plate
 reverb, ping-pong delay, chorus, tremolo, sidechain, tape, vinyl, saturation, EQ, compressor
-and limiter. The result is deterministic: one repo in one style always sounds the same.
-You can download a WAV, and a MIDI file with one track per part.
+and limiter. Levels are balanced by K-weighted loudness, and no style clips. The result is
+deterministic: one repo in one style always sounds the same. You can download a WAV, and a
+MIDI file with one track per part.
 
 ## Code layout
 
@@ -77,8 +98,8 @@ js/sources.js       GitHub API, jsDelivr, folder, pasted text, .gitignore
 js/model.js         tree → lines: depth, length, ink density, type, size
 js/dsp.js           sample synthesis: instruments, drums, vinyl, reverb impulse
 js/styles.js        styles: tempo, instruments, grooves, effects, balance
-js/composer.js      lines → score: sections, chords, melody, arpeggio, bass, drums
-js/engine.js        voices, effects, mix, playback scheduler, offline render, autoplay check
+js/composer.js      lines → score: repo character, sections, chords, melody, arpeggio, bass, drums, landmarks
+js/engine.js        live voices, effects, mix, playback scheduler, offline render, autoplay check
 js/exporters.js     WAV, MIDI, ZIP
 js/stage.js         canvas: the tree turning into a wave, and the piano roll
 js/treepanel.js     side panel with the tree

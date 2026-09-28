@@ -1,6 +1,7 @@
 'use strict';
 // Web Audio playback. Plucked, struck and keyboard tones are pre-rendered
-// samples (see dsp.js); pads, basses and 8-bit voices are live oscillators.
+// samples (see dsp.js); leads, brass, pads, basses, risers and 8-bit voices are
+// live oscillators.
 // Every style gets its own effect rack: reverb, ping-pong delay, chorus,
 // tremolo, sidechain ducking, tape wow, vinyl crackle, saturation, EQ,
 // glue compression and a limiter. The same code renders live and offline.
@@ -14,10 +15,13 @@ const Engine = (() => {
   // Measured so every instrument plays at a similar loudness (bright ones slightly lower).
   const INST_GAIN = {
     guitar: 1.15, rhodes: 0.54, vibes: 0.72, kalimba: 1, marimba: 1.28, musicbox: 0.9, glass: 0.96, sawpluck: 1.75,
-    pulse50: 0.3, pulse25: 0.48, pulse12: 0.7, tri: 0.55,
+    pulse50: 0.3, pulse25: 0.48, pulse12: 0.7, tri: 0.55, polylead: 0.45, brass: 0.8,
   };
-  const DRUM_GAIN = { kick: 1, snare: 0.7, clap: 0.65, rim: 0.45, hat: 0.35, ohat: 0.3, shaker: 0.3, crash: 0.35, swell: 0.4 };
-  const DRUM_PAN = { hat: 0.22, ohat: 0.22, shaker: -0.3, rim: -0.12, crash: -0.15, swell: 0 };
+  const DRUM_GAIN = {
+    kick: 1, snare: 0.7, clap: 0.65, rim: 0.45, hat: 0.35, ohat: 0.3, shaker: 0.3, crash: 0.35, swell: 0.4,
+    gsnare: 0.62, tom1: 0.6, tom2: 0.62, tom3: 0.66, tamb: 0.26, impact: 0.8,
+  };
+  const DRUM_PAN = { hat: 0.22, ohat: 0.22, shaker: -0.3, rim: -0.12, crash: -0.15, swell: 0, tom1: -0.35, tom3: 0.35, tamb: 0.4 };
 
   function context() {
     if (!ctx) {
@@ -118,13 +122,15 @@ const Engine = (() => {
       this.lfos = [];
       this.pulses = {};
 
-      // Master: pre → EQ → [drive → wow → lowpass] → glue comp → volume → limiter
+      // Master: pre → intro sweep → rumble filter → EQ → [drive → wow → lowpass] → glue comp → volume → limiter
       this.pre = gain(c, 1);
+      this.sweep = filt(c, 'lowpass', 20000, 0.7);
+      const rumble = filt(c, 'highpass', 24, 0.7);
       const eqLow = filt(c, 'lowshelf', 110, null, fx.eq[0]);
       const eqMid = filt(c, 'peaking', 380, 0.9, fx.eq[1]);
       const eqHigh = filt(c, 'highshelf', 7500, null, fx.eq[2]);
       this.fxIn = gain(c, 1);
-      this.pre.connect(eqLow).connect(eqMid).connect(eqHigh).connect(this.fxIn);
+      this.pre.connect(this.sweep).connect(rumble).connect(eqLow).connect(eqMid).connect(eqHigh).connect(this.fxIn);
       this.post = gain(c, 1);
       this.wet = gain(c, 1);
       this.dry = gain(c, 0);
@@ -161,9 +167,11 @@ const Engine = (() => {
 
       // Sends: plate reverb, ping-pong delay (dotted 8th), stereo chorus.
       this.revIn = gain(c, 1);
-      const rev = c.createConvolver();
-      rev.buffer = DSP.impulse(fx.ir, styleKey, c.sampleRate);
-      this.revIn.connect(filt(c, 'highpass', 180, 0.7)).connect(rev).connect(this.pre);
+      this.rev = c.createConvolver();
+      this.room = fx.ir;
+      this.rev.buffer = DSP.impulse(fx.ir, styleKey, c.sampleRate);
+      this.revHp = filt(c, 'highpass', 180, 0.7);
+      this.revIn.connect(this.revHp).connect(this.rev).connect(this.pre);
 
       this.dlyIn = gain(c, 1);
       this.dl = c.createDelay(3); this.dr = c.createDelay(3);
@@ -219,6 +227,31 @@ const Engine = (() => {
       this.dr.delayTime.setTargetAtTime(d, t, 0.05);
     }
     setTempoNow(bpm) { this.dl.delayTime.value = this.dr.delayTime.value = (60 / bpm) * 0.75; }
+    // Filtered intro: from track position pos, open the low-pass over what is left of len seconds.
+    sweepFrom(pos, at, len) {
+      const f = this.sweep.frequency;
+      f.cancelScheduledValues(0);
+      if (!len || pos >= len) { f.setValueAtTime(20000, at); return; }
+      f.setValueAtTime(420 * Math.pow(20000 / 420, pos / len), at);
+      f.exponentialRampToValueAtTime(20000, at + len - pos);
+    }
+    // Reverb length follows the repo (see Composer: room).
+    setRoom(seconds) {
+      if (!seconds || Math.abs(seconds - this.room) < 0.05) return;
+      this.room = seconds;
+      const buf = DSP.impulse(seconds, this.styleKey, this.c.sampleRate);
+      try {
+        this.rev.buffer = buf;
+      } catch (e) {
+        // Older engines allow a convolver's buffer to be set only once: swap in a new node.
+        const next = this.c.createConvolver();
+        next.buffer = buf;
+        this.revHp.disconnect();
+        this.revHp.connect(next).connect(this.pre);
+        this.rev.disconnect();
+        this.rev = next;
+      }
+    }
     setLayer(layer, on, now) {
       const t = this.c.currentTime;
       for (const b of LAYERS[layer] || []) {
@@ -356,8 +389,66 @@ const Engine = (() => {
     o.stop(t + dur + 0.06);
   }
 
+  // Live analogue-style voices: detuned oscillators through a resonant low-pass
+  // with its own envelope. osc: [wave, semitones, cents, level]; cut: filter
+  // floor and peak as multiples of the note frequency.
+  const SYNTHS = {
+    // Poly lead: two saws and a square an octave down; the filter snaps open and settles,
+    // vibrato fades in on held notes, and legato notes glide.
+    polylead: { osc: [['sawtooth', 0, -7, 0.5], ['sawtooth', 0, 7, 0.5], ['square', -12, 0, 0.2]], q: 2.6, atk: 0.005, dec: 0.4, sus: 0.72, rel: 0.16, cut: [1.6, 5], env: 0.14, vib: 0.28 },
+    // Synth brass: the filter swells open on every stab, like an 80s poly.
+    brass: { osc: [['sawtooth', 0, -11, 0.5], ['sawtooth', 0, 11, 0.5], ['sawtooth', -12, 0, 0.25]], q: 1.1, atk: 0.02, dec: 0.5, sus: 0.55, rel: 0.22, cut: [1.2, 4], env: 0.12, swell: true },
+  };
+
+  function synth(r, dest, t, e, offset = 0) {
+    const c = r.c, cfg = SYNTHS[e.inst];
+    const f = U.mtof(e.midi);
+    const dur = Math.max(0.05, (e.dur || 0.3) - offset);
+    const level = e.vel * INST_GAIN[e.inst];
+    const bright = e.bright == null ? 0.6 : e.bright;
+    const end = t + dur + cfg.rel * 4;
+    const lp = filt(c, 'lowpass', 1000, cfg.q);
+    const floor = Math.min(11000, f * cfg.cut[0] + 350 + 2400 * bright);
+    const peak = Math.min(16000, floor + f * cfg.cut[1] + 2200 * bright);
+    const fq = lp.frequency;
+    if (offset > 0) fq.setValueAtTime(floor, t);
+    else if (cfg.swell) { fq.setValueAtTime(floor * 0.35, t); fq.linearRampToValueAtTime(peak, t + 0.1); fq.setTargetAtTime(floor, t + 0.1, cfg.env * 2); }
+    else { fq.setValueAtTime(peak, t); fq.setTargetAtTime(floor, t, cfg.env); }
+    const amp = c.createGain(), g = amp.gain;
+    const atk = offset > 0 ? 0.02 : cfg.atk;
+    g.setValueAtTime(0, t);
+    g.linearRampToValueAtTime(level, t + atk);
+    g.setTargetAtTime(level * cfg.sus, t + atk, cfg.dec / 3);
+    g.setTargetAtTime(0, t + dur, cfg.rel / 3);
+    let node = lp.connect(amp);
+    if (e.pan && Math.abs(e.pan) > 0.02) node = node.connect(pan(c, e.pan));
+    node.connect(dest);
+    let vib = null;
+    if (cfg.vib && dur > cfg.vib + 0.15) {
+      const v = osc(c, 'sine', 5.4);
+      vib = c.createGain();
+      vib.gain.setValueAtTime(0, t + cfg.vib);
+      vib.gain.linearRampToValueAtTime(11, t + cfg.vib + 0.45);
+      v.connect(vib);
+      v.start(t); v.stop(end);
+    }
+    for (const [wave, semis, cents, amt] of cfg.osc) {
+      const k = Math.pow(2, semis / 12);
+      const o = osc(c, wave, f * k);
+      o.detune.value = cents;
+      if (e.from != null && offset <= 0) {
+        o.frequency.setValueAtTime(U.mtof(e.from) * k, t);
+        o.frequency.exponentialRampToValueAtTime(f * k, t + 0.075);
+      }
+      if (vib) vib.connect(o.detune);
+      o.connect(gain(c, amt)).connect(lp);
+      o.start(t); o.stop(end);
+    }
+  }
+
   function tone(r, dest, t, e, offset) {
     if (DSP.isSampled(e.inst)) sampled(r, dest, t, e, offset);
+    else if (SYNTHS[e.inst]) synth(r, dest, t, e, offset);
     else chip(r, dest, t, e);
   }
 
@@ -365,24 +456,28 @@ const Engine = (() => {
     const n = e.notes.length;
     e.notes.forEach((m, j) => {
       const dt = j * (e.gap || 0) - offset;
-      const ev = { inst: e.inst, midi: m, vel: e.vel * (j === 0 ? 1 : 0.85), dur: (e.dur || 1) - j * (e.gap || 0), pan: n > 1 ? (j / (n - 1) - 0.5) * 0.5 : 0, bright: 0.75 };
+      const ev = { inst: e.inst, midi: m, vel: e.vel * (j === 0 ? 1 : 0.85), dur: (e.dur || 1) - j * (e.gap || 0), pan: n > 1 ? (j / (n - 1) - 0.5) * 0.5 : 0, bright: e.bright == null ? 0.75 : e.bright };
       if (dt >= 0) tone(r, dest, t + dt, ev, 0);
-      else if (DSP.isSampled(e.inst)) sampled(r, dest, t, ev, -dt);
+      else if (DSP.isSampled(e.inst) || SYNTHS[e.inst]) tone(r, dest, t, ev, -dt);
     });
   }
 
-  // Live pads: detuned saws through a fixed low-pass, slow swell.
+  // Live pads: detuned oscillators split left and right, each side through its own
+  // low-pass that opens slowly (voices: [wave, cents, level, side]).
+  const PADS = {
+    warm: { cut: [900, 1400], open: 0.2, atk: 0.5, rel: 0.9, voices: [['sawtooth', -6, 1, -1], ['triangle', 5, 0.8, 1]] },
+    air: { cut: [650, 900], open: 0.3, atk: 1.4, rel: 2.2, voices: [['sawtooth', -8, 0.7, -1], ['sawtooth', 8, 0.7, 1], ['sine', 0, 1, 0]] },
+    supersaw: {
+      cut: [1500, 2600], open: 0.45, atk: 0.3, rel: 0.6,
+      voices: [['sawtooth', -23, 0.42, -1], ['sawtooth', -11, 0.46, 1], ['sawtooth', -4, 0.5, -1], ['sawtooth', 4, 0.5, 1], ['sawtooth', 11, 0.46, -1], ['sawtooth', 23, 0.42, 1], ['sawtooth', -1200, 0.35, 0]],
+    },
+  };
   function pad(r, dest, t, e, offset = 0) {
     const c = r.c;
-    const type = r.style.pad || 'warm';
+    const cfg = PADS[r.style.pad] || PADS.warm;
     const dur = e.dur - offset;
     if (dur <= 0.05) return;
-    const cfg = {
-      warm: { cut: 900 + 1400 * e.bright, atk: 0.5, rel: 0.9, voices: [['sawtooth', -6, 1], ['triangle', 5, 0.8]] },
-      air: { cut: 650 + 900 * e.bright, atk: 1.4, rel: 2.2, voices: [['sawtooth', -8, 0.7], ['sawtooth', 8, 0.7], ['sine', 0, 1]] },
-      supersaw: { cut: 1700 + 2400 * e.bright, atk: 0.25, rel: 0.5, voices: [['sawtooth', -13, 0.8], ['sawtooth', 0, 0.8], ['sawtooth', 13, 0.8]] },
-    }[type];
-    const lp = filt(c, 'lowpass', cfg.cut, 0.6);
+    const cut = cfg.cut[0] + cfg.cut[1] * e.bright;
     const a = c.createGain();
     const level = e.vel * 0.05;
     const atk = offset ? 0.12 : Math.min(cfg.atk, dur * 0.4);
@@ -390,18 +485,48 @@ const Engine = (() => {
     a.gain.linearRampToValueAtTime(level, t + atk);
     if (e.fade) a.gain.linearRampToValueAtTime(0, t + dur + cfg.rel);
     else { a.gain.setValueAtTime(level, t + dur); a.gain.linearRampToValueAtTime(0, t + dur + cfg.rel); }
-    lp.connect(a).connect(dest);
+    a.connect(dest);
+    const sides = [-1, 1].map((side) => {
+      const lp = filt(c, 'lowpass', cut, 0.6);
+      const open = offset ? 1 : 1 - cfg.open;
+      lp.frequency.setValueAtTime(cut * open, t);
+      lp.frequency.linearRampToValueAtTime(cut, t + Math.min(dur * 0.6, 2.5));
+      lp.connect(pan(c, side * 0.7)).connect(a);
+      return lp;
+    });
     const end = t + dur + cfg.rel + 0.05;
     for (const m of e.notes) {
       const f = U.mtof(m);
-      for (const [type2, det, amt] of cfg.voices) {
-        const o = osc(c, type2, f);
+      for (const [wave, det, amt, side] of cfg.voices) {
+        const o = osc(c, wave, f);
         o.detune.value = det;
-        const g = gain(c, amt);
-        o.connect(g).connect(lp);
+        const g = gain(c, side ? amt : amt / 2);
+        o.connect(g);
+        if (side <= 0) g.connect(sides[0]);
+        if (side >= 0) g.connect(sides[1]);
         o.start(t); o.stop(end);
       }
     }
+  }
+
+  // Noise riser into a section change: band-passed noise sweeping up and swelling in.
+  function riser(r, dest, t, e, offset = 0) {
+    const c = r.c, dur = e.dur - offset;
+    if (dur < 0.1) return;
+    const k = offset / e.dur;
+    const src = c.createBufferSource();
+    src.buffer = DSP.noiseBuffer();
+    src.loop = true;
+    const bp = filt(c, 'bandpass', 400, 1.6);
+    bp.frequency.setValueAtTime(320 * Math.pow(9000 / 320, k), t);
+    bp.frequency.exponentialRampToValueAtTime(9000, t + dur);
+    const g = c.createGain(), lvl = e.vel * 1.2;
+    g.gain.setValueAtTime(Math.max(0.001, lvl * k * k), t);
+    g.gain.exponentialRampToValueAtTime(lvl, t + dur);
+    g.gain.linearRampToValueAtTime(0, t + dur + 0.04);
+    src.connect(bp).connect(g).connect(dest);
+    src.start(t);
+    src.stop(t + dur + 0.06);
   }
 
   function bass(r, dest, t, e) {
@@ -422,14 +547,18 @@ const Engine = (() => {
       srcs.push(osc(c, 'triangle', f));
       srcs[0].connect(out);
     } else if (type === 'saw') {
-      const s = osc(c, 'sawtooth', f), sub = osc(c, 'sine', f);
+      // Two saws a few cents apart for width of tone, a sine sub for weight, a plucky filter.
+      const s = osc(c, 'sawtooth', f), s2 = osc(c, 'sawtooth', f), sub = osc(c, 'sine', f);
+      s.detune.value = -6; s2.detune.value = 6;
       const lp = filt(c, 'lowpass', 500, 4);
       try { lp.frequency.automationRate = 'k-rate'; } catch (err) { /* stays a-rate */ }
-      lp.frequency.setValueAtTime(1500, t);
-      lp.frequency.setTargetAtTime(420, t, 0.06);
-      s.connect(lp).connect(out);
-      sub.connect(gain(c, 0.7)).connect(out);
-      srcs.push(s, sub);
+      lp.frequency.setValueAtTime(1300 + 900 * U.clamp((e.vel - 0.8) * 5, 0, 1), t);
+      lp.frequency.setTargetAtTime(400, t, 0.07);
+      s.connect(gain(c, 0.55)).connect(lp);
+      s2.connect(gain(c, 0.55)).connect(lp);
+      lp.connect(out);
+      sub.connect(gain(c, 0.75)).connect(out);
+      srcs.push(s, s2, sub);
     } else {
       const s = osc(c, 'sine', f);
       s.connect(out);
@@ -450,7 +579,8 @@ const Engine = (() => {
     const c = r.c;
     const src = c.createBufferSource();
     src.buffer = buf;
-    let node = src.connect(gain(c, e.vel * (DRUM_GAIN[e.k] || 0.5)));
+    const trim = (r.style.drumMix && r.style.drumMix[e.k]) || 1;
+    let node = src.connect(gain(c, e.vel * (DRUM_GAIN[e.k] || 0.5) * trim));
     if (DRUM_PAN[e.k]) node = node.connect(pan(c, DRUM_PAN[e.k]));
     node.connect(dest);
     src.start(Math.max(0, t));
@@ -466,6 +596,7 @@ const Engine = (() => {
       case 'comp': return chord(r, s.g.comp, when, e, offset);
       case 'pad': return pad(r, s.g.pad, when, e, offset);
       case 'bass': return bass(r, s.g.bass, when, e);
+      case 'riser': return riser(r, s.g.drums, when, e, offset);
       default: return drum(r, s.g.drums, when, e);
     }
   }
@@ -478,7 +609,7 @@ const Engine = (() => {
     for (const e of score.events) {
       if (e.notes) { if (e.k !== 'pad') for (const m of e.notes) addNote(e.inst, m); }
       else if (e.inst) addNote(e.inst, e.midi);
-      else if (e.midi == null) { const key = `d:${kit}:${e.k}`; if (!jobs.has(key)) jobs.set(key, { key, make: () => DSP.drum(kit, e.k) }); }
+      else if (e.midi == null && e.k !== 'riser') { const key = `d:${kit}:${e.k}`; if (!jobs.has(key)) jobs.set(key, { key, make: () => DSP.drum(kit, e.k) }); }
     }
     return Array.from(jobs.values());
   }
@@ -515,10 +646,10 @@ const Engine = (() => {
       const was = this.playing;
       if (was) { this.stopSession(); this.playing = false; }
       this.score = score;
-      this.longs = score.events.filter((e) => e.k === 'pad' || e.k === 'comp' || (e.k === 'lead' && e.dur > 1));
+      this.longs = score.events.filter((e) => e.k === 'pad' || e.k === 'comp' || e.k === 'riser' || (e.k === 'lead' && e.dur > 1));
       this.pos = U.clamp(pos, 0, score.duration);
       if (this.rig && this.rig.styleKey !== score.style) { this.rig.dispose(); this.rig = null; }
-      if (this.rig) this.rig.setTempo(score.bpm);
+      if (this.rig) { this.rig.setTempo(score.bpm); this.rig.setRoom(score.room); }
       this.prep = prepare(score, (f) => this.emit('prep', f));
       if (was) this.play();
       this.emit('state');
@@ -531,6 +662,7 @@ const Engine = (() => {
         this.rig.setFx(this.fx, true);
         this.rig.setVolume(this.volume, true);
         this.rig.setTempoNow(this.score.bpm);
+        this.rig.setRoom(this.score.room);
       }
       return this.rig;
     }
@@ -575,6 +707,7 @@ const Engine = (() => {
       this.session = new Session(r);
       this.t0 = c.currentTime + 0.08;
       this.pos0 = this.pos;
+      r.sweepFrom(this.pos0, this.t0, this.score.sweep);
       for (const e of this.longs) {
         if (e.t >= this.pos0) break;
         if (e.t + e.dur > this.pos0 + 0.1) play(r, this.session, this.t0, e, this.pos0 - e.t);
@@ -617,6 +750,8 @@ const Engine = (() => {
     const oc = new OAC(2, Math.ceil((score.duration + 0.25) * sr), sr);
     const rig = new Rig(oc, score.style, !!opts.raw);
     rig.setTempoNow(score.bpm);
+    rig.setRoom(score.room);
+    rig.sweepFrom(0, 0, score.sweep);
     const layers = opts.layers || {};
     for (const k of Object.keys(LAYERS)) rig.setLayer(k, layers[k] !== false, true);
     rig.setFx(opts.fx !== false, true);

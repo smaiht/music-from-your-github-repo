@@ -41,12 +41,29 @@ const Sources = (() => {
   function getToken() { return U.storage.get(TOKEN_KEY) || ''; }
   function setToken(t) { U.storage.set(TOKEN_KEY, (t || '').trim()); }
 
+  // fetch with a deadline, so a connection that never answers fails instead of loading forever.
+  async function fetchWithin(url, init, ms, signal) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    const onAbort = () => ctl.abort();
+    if (signal) { if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+    try {
+      return await fetch(url, { ...init, signal: ctl.signal });
+    } catch (e) {
+      if (signal && signal.aborted) throw e;
+      throw e.name === 'AbortError' ? new TypeError('timed out') : e;
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  }
+
   async function gh(path, token, signal) {
     const headers = { Accept: 'application/vnd.github+json' };
     if (token) headers.Authorization = `Bearer ${token}`;
     let res;
     try {
-      res = await fetch(API + path, { headers, signal });
+      res = await fetchWithin(API + path, { headers }, 15000, signal);
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       throw new SourceError('network', 'Couldn’t reach GitHub.');
@@ -72,7 +89,7 @@ const Sources = (() => {
     for (const r of refs) {
       let res;
       try {
-        res = await fetch(`https://data.jsdelivr.com/v1/packages/gh/${owner}/${repo}@${encodeURIComponent(r)}?structure=flat`, { signal });
+        res = await fetchWithin(`https://data.jsdelivr.com/v1/packages/gh/${owner}/${repo}@${encodeURIComponent(r)}?structure=flat`, {}, 10000, signal);
       } catch (e) {
         if (e.name === 'AbortError') throw e;
         continue;
@@ -88,7 +105,8 @@ const Sources = (() => {
     return null;
   }
 
-  async function fromGitHub(spec, { signal, onStatus } = {}) {
+  // mirror: false skips jsDelivr on a rate limit (the caller has a saved snapshot instead).
+  async function fromGitHub(spec, { signal, onStatus, mirror = true } = {}) {
     const { owner, repo, refParts } = spec;
     const token = getToken();
     const full = `${owner}/${repo}`;
@@ -125,7 +143,7 @@ const Sources = (() => {
         .filter((t) => t.type === 'blob' || t.type === 'commit')
         .map((t) => ({ path: t.path, size: t.size || 0, type: t.type }));
       truncated = !!tree.truncated;
-    } else if (lastErr && lastErr.code === 'rate_limit') {
+    } else if (lastErr && lastErr.code === 'rate_limit' && mirror) {
       onStatus && onStatus('GitHub rate limit reached, trying the jsDelivr mirror…');
       const alt = await viaJsDelivr(owner, repo, refParts[0], signal);
       if (!alt) throw lastErr;
@@ -367,7 +385,7 @@ const Sources = (() => {
   async function rateLimit() {
     const token = getToken();
     try {
-      const res = await fetch(`${API}/rate_limit`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const res = await fetchWithin(`${API}/rate_limit`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }, 8000);
       if (!res.ok) return { ok: res.status !== 401, bad: res.status === 401 };
       const core = (await res.json()).resources.core;
       return { ok: true, remaining: core.remaining, limit: core.limit, reset: core.reset * 1000 };
