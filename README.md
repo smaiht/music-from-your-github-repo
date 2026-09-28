@@ -11,9 +11,6 @@ The result is a waveform, and it plays.
 
 https://github.com/user-attachments/assets/92109122-3fe5-4d71-986f-0b1b5dac2933
 
-It is not a screen recording: `tools/demo-video.mjs` steps the page's own renderer through a
-virtual clock frame by frame, and lays over it the track rendered offline by the same engine,
-so picture and sound line up to the sample.
 
 ## Running it
 
