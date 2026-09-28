@@ -5002,10 +5002,10 @@ class TreePanel {
     this.lines = [];
     this.cur = -1;
     this.userScrollAt = 0;
-    this.programmatic = false;
+    this.programmaticUntil = 0;
     this.pool = new Map();
     scroller.addEventListener('scroll', () => {
-      if (this.programmatic) { this.programmatic = false; } else this.userScrollAt = performance.now();
+      if (performance.now() > this.programmaticUntil) this.userScrollAt = performance.now();
       this.render();
     }, { passive: true });
     inner.addEventListener('click', (ev) => {
@@ -5075,14 +5075,28 @@ class TreePanel {
   setCurrent(i, follow) {
     if (i === this.cur) return;
     this.cur = i;
-    if (follow && i >= 0 && performance.now() - this.userScrollAt > 2500) {
+    const follows = follow && i >= 0 && performance.now() - this.userScrollAt > 2500;
+    if (follows) {
       const target = Math.max(0, i * this.RH - this.sc.clientHeight * 0.38);
       if (Math.abs(this.sc.scrollTop - target) > 1) {
-        this.programmatic = true;
+        this.programmaticUntil = performance.now() + 150;
         this.sc.scrollTop = target;
       }
     }
     this.render();
+    // Deep paths run off the right edge: slide sideways so the current name stays readable.
+    const name = follows && this.pool.get(i) && this.pool.get(i).querySelector('.tp-name');
+    if (name) {
+      const x = name.offsetLeft, w = name.offsetWidth, view = this.sc.clientWidth;
+      const left = this.sc.scrollLeft;
+      let to = left;
+      if (x + w <= view - 16) to = 0; // fits without sliding
+      else if (x + w > left + view - 16 || x < left + 24) to = Math.max(0, Math.min(x - 40, x + w - view + 16));
+      if (Math.abs(to - left) > 1) {
+        this.programmaticUntil = performance.now() + 150;
+        this.sc.scrollLeft = to;
+      }
+    }
   }
 }
 </script>

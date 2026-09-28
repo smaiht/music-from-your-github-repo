@@ -1,9 +1,18 @@
 # Filophone
 
+**Live: [ne.so.gl/gitmusic](https://ne.so.gl/gitmusic/)**
+
 A web page that turns a GitHub repository's file tree into music.
 The tree is fully expanded, names are pushed to the left edge, letters become
 blocks by ink density, and the figure turns 90° and mirrors downwards.
 The result is a waveform, and it plays.
+
+[![smaiht/photobooth: the tree turns into a wave and plays. Click for the video with sound.](media/preview.gif)](https://ne.so.gl/gitmusic/media/demo.mp4)
+
+**[Watch the demo with sound](https://ne.so.gl/gitmusic/media/demo.mp4)** ([`media/demo.mp4`](media/demo.mp4)).
+It is not a screen recording: `tools/demo-video.mjs` steps the page's own renderer through a
+virtual clock frame by frame, and lays over it the track rendered offline by the same engine,
+so picture and sound line up to the sample.
 
 ## Running it
 
@@ -13,6 +22,21 @@ No build step needed.
 - Or bundle it into one file: `node tools/build.mjs` → `dist/filophone.html`. You can send it
   to anyone or put it on GitHub Pages.
 - For development any static server will do: `python3 -m http.server`.
+
+## Publishing
+
+The live site is a clone of this repo on the server: the web folder `/var/www/html/gitmusic`
+is the working tree, and its git directory lives outside the web root
+(`/var/lib/git/gitmusic.git`), so nothing but the site is served. Nginx serves `index.html`,
+`css/` and `js/` directly, no build needed. To publish:
+
+```
+git push && tools/deploy.sh
+```
+
+`deploy.sh` checks that your `HEAD` is on GitHub, then fast-forwards the server with `git pull`.
+
+To re-render the demo video (needs Chrome and ffmpeg): `node tools/build.mjs && node tools/demo-video.mjs`.
 
 ## Where the tree comes from
 
@@ -105,7 +129,9 @@ js/stage.js         canvas: the tree turning into a wave, and the piano roll
 js/treepanel.js     side panel with the tree
 js/app.js           wires it all together
 tools/build.mjs     bundles everything into one HTML file
-tools/deploy.sh     builds and uploads the bundle
+tools/deploy.sh     publishes: git pull on the server
+tools/demo-video.mjs  renders media/demo.mp4 and media/preview.gif frame by frame
+media/              the demo video and its preview
 ```
 
 Keys: Space plays/pauses, ← → skip 5 seconds, Home goes back to the start.
