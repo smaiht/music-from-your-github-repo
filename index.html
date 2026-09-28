@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Filophone</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23151816'/%3E%3Crect x='5' y='12' width='3.2' height='8' rx='1.6' fill='%23fbfbf8'/%3E%3Crect x='10.6' y='6' width='3.2' height='20' rx='1.6' fill='%232a78d6'/%3E%3Crect x='16.2' y='9.5' width='3.2' height='13' rx='1.6' fill='%23eb6834'/%3E%3Crect x='21.8' y='4.5' width='3.2' height='23' rx='1.6' fill='%231baf7a'/%3E%3C/svg%3E">
+<meta name="description" content="Paste a GitHub repo link: its file tree unfolds, turns 90° and plays as a sound wave.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Martian+Mono:wdth,wght@112.5,700..800&family=Onest:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&text=%E2%94%80%E2%94%82%E2%94%94%E2%94%9C&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="brand">
+      <h1 class="wordmark">Filophone</h1>
+      <p class="tagline">A repo’s file tree unfolds, turns&nbsp;90° and&nbsp;plays as a&nbsp;sound wave.</p>
+    </div>
+
+    <form class="repo-form" id="repoForm" autocomplete="off" novalidate>
+      <label class="field-label" for="repoInput">GitHub repository link</label>
+      <div class="repo-row">
+        <input class="repo-input" id="repoInput" name="repo" type="text" inputmode="url" spellcheck="false"
+               placeholder="github.com/owner/repo" aria-describedby="status">
+        <button class="btn btn-primary" id="goBtn" type="submit">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
+          <span>Turn into music</span>
+        </button>
+      </div>
+      <p class="quota" id="quota"></p>
+    </form>
+
+    <div class="sources">
+      <div class="chip-row" role="group" aria-labelledby="demoLabel">
+        <span class="row-label" id="demoLabel">Examples</span>
+        <div class="chips" id="demoChips"></div>
+      </div>
+      <div class="alt-row">
+        <span class="row-label">Or</span>
+        <label class="btn btn-quiet" for="folderInput" id="folderBtn">Pick a folder</label>
+        <input id="folderInput" type="file" webkitdirectory directory multiple hidden>
+        <button class="btn btn-quiet" id="pasteToggle" type="button" aria-expanded="false" aria-controls="pastePanel">Paste a file list</button>
+        <button class="btn btn-quiet" id="tokenToggle" type="button" aria-expanded="false" aria-controls="tokenPanel">GitHub token</button>
+        <span class="drop-hint">You can also drop a folder onto the page</span>
+      </div>
+
+      <div class="drawer" id="pastePanel" hidden>
+        <label class="field-label" for="pasteInput">Output of <code>git ls-files</code>, <code>find . -type f</code> or <code>tree</code></label>
+        <textarea id="pasteInput" rows="6" spellcheck="false" placeholder="src/main.py&#10;src/parser.py&#10;tests/test_audio.py&#10;README.md"></textarea>
+        <div class="drawer-actions">
+          <button class="btn btn-primary" id="pasteGo" type="button">Play this list</button>
+          <span class="hint">Works for private repos too: you run the command yourself, nothing is sent to a server.</span>
+        </div>
+      </div>
+
+      <form class="drawer" id="tokenPanel" autocomplete="off" hidden>
+        <input type="text" name="username" value="github" autocomplete="username" hidden>
+        <label class="field-label" for="tokenInput">GitHub personal access token (read-only)</label>
+        <div class="repo-row">
+          <input class="repo-input" id="tokenInput" type="password" spellcheck="false" autocomplete="off" placeholder="github_pat_…">
+          <button class="btn" id="tokenSave" type="submit">Save</button>
+          <button class="btn btn-quiet" id="tokenClear" type="button">Remove</button>
+        </div>
+        <p class="hint">Without a token GitHub allows 60 requests an hour, and one tune uses two. The token stays in this browser and is only sent to api.github.com.</p>
+      </form>
+    </div>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </header>
+
+  <main class="instrument">
+    <section class="deck" aria-label="Stage">
+      <div class="deck-head">
+        <div class="title-block">
+          <h2 class="repo-title" id="repoTitle">—</h2>
+          <p class="repo-desc" id="repoDesc"></p>
+        </div>
+        <dl class="facts" id="repoFacts"></dl>
+      </div>
+
+      <div class="transport" role="group" aria-label="Playback">
+        <button class="btn btn-round" id="restartBtn" type="button" aria-label="Back to start" title="Back to start (Home)">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h2v10H3zM13 3v10L6 8z" fill="currentColor"/></svg>
+        </button>
+        <button class="btn btn-play" id="playBtn" type="button" aria-label="Play" title="Play / pause (Space)">
+          <svg class="icon icon-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5v11l9-5.5z" fill="currentColor"/></svg>
+          <svg class="icon icon-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" fill="currentColor"/></svg>
+        </button>
+        <div class="time"><span id="timeNow">0:00</span><span class="time-sep">/</span><span id="timeTotal">0:00</span></div>
+        <input class="seek" id="seekRange" type="range" min="0" max="1" step="0.01" value="0" aria-label="Position">
+        <button class="btn btn-quiet btn-small toggle" id="loopBtn" type="button" aria-pressed="false">Loop</button>
+        <label class="vol" title="Volume">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h2.5L8 3v10L4.5 10H2z" fill="currentColor"/><path d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.3 3.6a6 6 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <input id="volRange" type="range" min="0" max="100" step="1" value="80" aria-label="Volume">
+        </label>
+      </div>
+
+      <div class="style-row">
+        <span class="row-label" id="styleLabel">Style</span>
+        <div class="seg-group" id="styleSeg" role="group" aria-labelledby="styleLabel"></div>
+        <span class="hint" id="styleHint"></span>
+      </div>
+
+      <div class="morph-bar">
+        <ol class="steps" id="steps"></ol>
+        <button class="btn btn-quiet btn-small" id="replayBtn" type="button">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3a5 5 0 1 1-4.6 3H1.6A6.8 6.8 0 1 0 3.4 3.3L2 2v4h4L4.6 4.6A5 5 0 0 1 8 3z" fill="currentColor"/></svg>
+          Replay the transformation
+        </button>
+      </div>
+
+      <div class="stage-wrap" id="stageWrap">
+        <canvas class="stage" id="stage" role="img" aria-label="File tree turning into a sound wave"></canvas>
+        <p class="caption" id="caption"></p>
+        <button class="btn stage-play" id="stagePlay" type="button" hidden>
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5v11l9-5.5z" fill="currentColor"/></svg>
+          <span>Press play to listen</span>
+        </button>
+        <div class="loader" id="loader" hidden><span class="loader-dot"></span><span id="loaderText">Loading the tree…</span></div>
+        <div class="tooltip" id="tooltip" hidden></div>
+      </div>
+      <canvas class="roll" id="roll" aria-hidden="true"></canvas>
+
+      <div class="mixer" role="group" aria-label="Sound">
+        <div class="t-controls">
+          <label class="ctl">
+            <span class="ctl-label">Lines per beat</span>
+            <select id="speedSel"></select>
+          </label>
+          <label class="ctl">
+            <span class="ctl-label">Tempo <output id="bpmOut" aria-live="off">—</output></span>
+            <span class="ctl-row">
+              <input id="bpmRange" type="range" min="60" max="170" step="1" value="110">
+              <button class="btn btn-quiet btn-small" id="bpmAuto" type="button">auto</button>
+            </span>
+          </label>
+          <label class="ctl">
+            <span class="ctl-label">Tree ↔ wave</span>
+            <input id="morphRange" type="range" min="0" max="5" step="0.01" value="0">
+          </label>
+        </div>
+
+        <div class="t-foot">
+          <div class="layers" role="group" aria-labelledby="layersLabel">
+            <span class="row-label" id="layersLabel">Layers</span>
+            <button class="btn btn-small toggle" type="button" data-layer="lead" aria-pressed="true">Melody</button>
+            <button class="btn btn-small toggle" type="button" data-layer="arp" aria-pressed="true">Accompaniment</button>
+            <button class="btn btn-small toggle" type="button" data-layer="chords" aria-pressed="true">Chords</button>
+            <button class="btn btn-small toggle" type="button" data-layer="bass" aria-pressed="true">Bass</button>
+            <button class="btn btn-small toggle" type="button" data-layer="drums" aria-pressed="true">Drums</button>
+            <button class="btn btn-small toggle" type="button" data-layer="fx" aria-pressed="true" title="Reverb, delay, chorus, sidechain, tape, vinyl, saturation">Effects</button>
+          </div>
+          <div class="exports" role="group" aria-label="Download">
+            <button class="btn btn-small" id="wavBtn" type="button">Download WAV</button>
+            <button class="btn btn-small" id="midiBtn" type="button">Download MIDI</button>
+            <button class="btn btn-quiet btn-small" id="shareBtn" type="button">Copy link</button>
+          </div>
+        </div>
+      </div>
+
+      <section class="readout" id="readout" aria-live="off" aria-label="What is playing now">
+        <div class="readout-head">
+          <span class="row-label" id="readoutLabel">First line</span>
+          <span class="readout-path" id="readoutPath"></span>
+        </div>
+        <dl class="params" id="readoutParams"></dl>
+      </section>
+    </section>
+
+    <aside class="tree-panel" aria-label="File tree">
+      <div class="panel-head">
+        <span class="panel-title">Tree</span>
+        <span class="panel-count" id="treeCount"></span>
+      </div>
+      <div class="tree-scroll" id="treeScroll" tabindex="0">
+        <div class="tree-inner" id="treeInner"></div>
+      </div>
+      <p class="panel-hint">Click a line to jump to it.</p>
+    </aside>
+  </main>
+
+  <section class="how" aria-labelledby="howTitle">
+    <h2 class="how-title" id="howTitle">How a tree becomes music</h2>
+    <p class="how-lead">An “amplitude over time” picture is all you need to make a sound, but play the tree’s silhouette directly as a waveform and you get clicks and hum. So the tree drives notes inside a musical frame instead: each section has its own chords, the peaks of the silhouette sing the melody, the other lines play the accompaniment, and the loudness of the silhouette decides how many instruments join in.</p>
+
+    <div class="table-wrap">
+      <table class="map">
+        <thead>
+          <tr><th scope="col">Tree property</th><th scope="col">What you hear</th><th scope="col">How it’s computed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Line number, top to bottom</td><td>Time, left to right</td><td>One line = one grid step. The rate is picked so the track lasts between 20 seconds and 3 minutes.</td></tr>
+          <tr><td>Top-level folder</td><td>Song section</td><td>Each section gets its own 4-bar chord progression from a tried-and-tested set and its own lead instrument. Long sections follow an A A B A form. Files in the root close with a cadence to the tonic.</td></tr>
+          <tr><td>Silhouette peaks</td><td>Melody</td><td>In each half-bar the line with the longest name sings. The higher the silhouette, the higher the note, so the melody’s rhythm follows the shape of the tree.</td></tr>
+          <tr><td>Other lines</td><td>Accompaniment</td><td>A soft arpeggio over the current chord. Each note’s volume depends on the name’s length, and the pattern restarts in every new folder.</td></tr>
+          <tr><td>Folder name</td><td>Motif</td><td>A short melodic figure that repeats while the folder’s files play. Stepping into a subfolder raises the melody, stepping out lowers it. On strong beats the note is pulled to a chord tone.</td></tr>
+          <tr><td>Silhouette over 4-bar phrases</td><td>Arrangement</td><td>Four levels: intro, groove, full band, climax. Quiet stretches play without drums, loud ones add drums, bass and doublings.</td></tr>
+          <tr><td>File type</td><td>Timbre</td><td>A section plays the instrument of its main file type. A file of another type adds a quiet ornament on its own instrument.</td></tr>
+          <tr><td>Letter density</td><td>Note brightness</td><td>The share of inked pixels in each character, relative to the densest ASCII character. “iii” sounds darker, “WWW” brighter.</td></tr>
+          <tr><td>File size</td><td>Note length</td><td>Log of the size: big files ring on, small ones are short and clipped.</td></tr>
+          <tr><td>Position among siblings</td><td>Stereo</td><td>The first file in a folder sits on the left, the last on the right.</td></tr>
+          <tr><td>Dominant language</td><td>Mode</td><td>Python is Dorian, JavaScript Mixolydian, TypeScript Lydian, Go and Java major, Rust and C minor, C++ Phrygian.</td></tr>
+          <tr><td>Repository name</td><td>Key</td><td>A hash of the name picks one of 12 tonics. The same repo in the same style always sounds the same.</td></tr>
+          <tr><td>Median name length</td><td>Tempo</td><td>Short names give a faster tempo, long ones slow it down, within the style’s tempo range.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="legend-title">Section instruments in the current style</h3>
+    <ul class="legend" id="legend"></ul>
+    <p class="how-foot">Guitar, electric piano, vibraphone, kalimba, marimba and bells are synthesised in the browser from a model of a vibrating string or bar: every overtone decays at its own rate. The drums are built like those of the 808 and 909 drum machines. Effects depend on the style: plate reverb, ping-pong delay, chorus, electric-piano tremolo, kick sidechain, tape with pitch wobble, vinyl crackle, saturation, EQ, compressor and limiter. Open the MIDI file in any DAW to re-voice it with your own instruments.</p>
+  </section>
+
+  <footer class="foot">
+    <span>Filophone</span>
+    <span>GitHub trees come from the public API. The built-in examples are saved ahead of time and work offline.</span>
+  </footer>
+</div>
+
+<div class="drop-overlay" id="dropOverlay" hidden>
+  <div class="drop-card">Drop the folder to hear its tree</div>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/demos.js"></script>
+<script src="js/sources.js"></script>
+<script src="js/model.js"></script>
+<script src="js/dsp.js"></script>
+<script src="js/styles.js"></script>
+<script src="js/composer.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/exporters.js"></script>
+<script src="js/stage.js"></script>
+<script src="js/treepanel.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
